@@ -1516,7 +1516,7 @@ if __name__ == "__main__":
             token=os.environ["ACCESS_REPO_INFO_TOKEN"], workflow_id=prev_workflow_id
         )
     else:
-        prev_workflow_run_id = os.environ["PREV_WORKFLOW_RUN_ID"]
+        prev_workflow_run_id = "21503010601"
         other_workflow_run_id = os.environ["OTHER_WORKFLOW_RUN_ID"]
         other_workflow_run_ids.append(other_workflow_run_id)
 

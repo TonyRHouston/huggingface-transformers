@@ -84,5 +84,6 @@ if __name__ == "__main__":
         # Only add the slice if it is not an empty list
         if len(d[start:end]) > 0:
             model_splits.append(d[start:end])
+    model_splits = [["models/vit"]]
 
     print(model_splits)
