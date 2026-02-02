@@ -447,10 +447,9 @@ class DeepseekV32Moe(nn.Module):
         super().__init__()
         self.config = config
         self.experts = DeepseekV32Experts(config)
-        self.gate = nn.Linear(config.hidden_size, config.n_routed_experts, bias=False)
-        if config.n_shared_experts is not None:
-            intermediate_size = config.moe_intermediate_size * config.n_shared_experts
-            self.shared_experts = DeepseekV32MLP(config=config, intermediate_size=intermediate_size)
+        self.gate = nn.Linear(config.hidden_size, config.n_routed_experts, bias=True)
+        intermediate_size = config.moe_intermediate_size * config.n_shared_experts
+        self.shared_experts = DeepseekV32MLP(config=config, intermediate_size=intermediate_size)
         self.routed_scaling_factor = config.routed_scaling_factor
         self.topk_method = config.topk_method
         self.num_group = config.n_group

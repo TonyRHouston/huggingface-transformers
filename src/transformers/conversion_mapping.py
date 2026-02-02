@@ -294,6 +294,7 @@ def _build_checkpoint_conversion_mapping():
         WeightRenaming("indexer.wk", "indexer.k_proj"),
         WeightRenaming("indexer.k_norm", "indexer.k_layernorm"),
         WeightRenaming("indexer.wq_b", "indexer.q_b_proj"),
+        WeightRenaming("gate.e_score_correction_bias", "gate.bias"),
     ]
     for model_type, base_pattern in _MODEL_TO_CONVERSION_PATTERN.items():
         if model_type in mapping:
