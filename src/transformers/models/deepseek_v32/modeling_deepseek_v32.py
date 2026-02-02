@@ -307,17 +307,19 @@ class DeepseekV32Indexer(nn.Module):
         k_pe = apply_rotary_emb(k_pe.unsqueeze(2), position_embeddings).squeeze(2)
         k = torch.cat([k_pe, k_nope], dim=-1)
 
-        k, _ = past_key_values.update(k, k, layer_idx=self.layer_idx, cache_kwargs={"cache_position": cache_positions})
+        if past_key_values is not None:
+            past_key_values.indexer_keys = torch.cat([getattr(past_key_values, "indexer_keys", torch.empty_like(k)), k], dim=1)
+            k = past_key_values.indexer_keys
 
         # weights_proj is kept in fp32
         weights = self.weights_proj(hidden_states.float()) * self.num_heads ** -0.5
         weights = weights * self.softmax_scale
 
         index_score = index_no_scaling(q, weights, k)
-        # TODO use our interface for this
+        # TODO use our interface for this ? what mask is this one actually? seq_len, num_heads is trhe shape of the scores
         if attention_mask is not None:
-            index_score += attention_mask
-        topk_indices = index_score.topk(min(self.index_topk, cache_positions[-1]), dim=-1)[1]
+            index_score += attention_mask[:,0,:, :1]
+        topk_indices = index_score.topk(min(self.index_topk, cache_positions[-1] + 1), dim=-1)[1]
         return topk_indices
 
 
@@ -413,9 +415,10 @@ class DeepseekV32Attention(nn.Module):
             scores = torch.einsum("bshd,bthd->bsht", q_states, k).mul_(self.softmax_scale)
 
             # indexer TODO: we need to add a new cache class with 3 values (compressed_k,k, k_index)
-            topk_indices = self.indexer(hidden_states, q_resid, cache_position,  position_embeddings, attention_mask, DynamicCache())
+            topk_indices = self.indexer(hidden_states, q_resid, cache_position,  position_embeddings, attention_mask, past_key_values)
             index_mask = torch.full((B, S, S), float("-inf"), device=hidden_states.device).scatter_(-1, topk_indices, 0)
-            # TODO Use our API for masking using vmap and stuff for faster masking
+            # TODO for now we use `eager` attn implementation only because otherwise the mask is not materialized properly (expectedly so)
+            # here we should probably use the masking utils?
             index_mask += attention_mask
             scores += index_mask.unsqueeze(2)
 
@@ -429,8 +432,8 @@ class DeepseekV32Attention(nn.Module):
             scores = (torch.einsum("bshc,btc->bsht", q_pass, cached_kv) + q_rot ) * self.softmax_scale
 
             # indexer
-            topk_indices = self.indexer(hidden_states, q_resid, cache_position,  position_embeddings, attention_mask,  DynamicCache())
-            index_mask = torch.full((B, 1, S), float("-inf"), device=hidden_states.device).scatter_(-1, topk_indices, 0)
+            topk_indices = self.indexer(hidden_states, q_resid, cache_position,  position_embeddings, attention_mask,  past_key_values)
+            index_mask = torch.full((B, 1, cache_positions[-1]), float("-inf"), device=hidden_states.device).scatter_(-1, topk_indices, 0)
             scores += index_mask.unsqueeze(2)
 
             scores = scores.softmax(dim=-1)
