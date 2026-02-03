@@ -198,6 +198,7 @@ class AltRobertaEmbeddings(nn.Module):
 class AltRobertaSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
                 f"The hidden size ({config.hidden_size}) is not a multiple of the number of attention "
@@ -218,8 +219,9 @@ class AltRobertaSelfAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
-        output_attentions: bool | None = False,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
+        output_attentions = kwargs.get("output_attentions", self.config.output_attentions) # TODO can't find a workaround here yet 
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.attention_head_size)
 
@@ -283,12 +285,12 @@ class AltRobertaAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
-        output_attentions: bool | None = False,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         self_outputs = self.self(
             hidden_states,
             attention_mask=attention_mask,
-            output_attentions=output_attentions,
+            **kwargs,
         )
         attention_output = self.output(self_outputs[0], hidden_states)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
@@ -340,13 +342,11 @@ class AltRobertaLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
-        output_attentions: bool | None = False,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         self_attention_outputs = self.attention(
             hidden_states,
             attention_mask=attention_mask,
-            output_attentions=output_attentions,
             **kwargs,
         )
         attention_output = self_attention_outputs[0]
@@ -373,41 +373,23 @@ class AltRobertaEncoder(nn.Module):
         self.layer = nn.ModuleList([AltRobertaLayer(config) for i in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
-    @can_return_tuple
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
-        output_attentions: bool | None = False,
-        output_hidden_states: bool | None = False,
-        return_dict: bool | None = True,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | BaseModelOutput:
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attentions = () if output_attentions else None
-
         for i, layer_module in enumerate(self.layer):
-            if output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states,)
-
             layer_outputs = layer_module(
                 hidden_states,
                 attention_mask,
-                output_attentions,
                 **kwargs,
             )
 
             hidden_states = layer_outputs[0]
-            if output_attentions:
-                all_self_attentions = all_self_attentions + (layer_outputs[1],)
-
-        if output_hidden_states:
-            all_hidden_states = all_hidden_states + (hidden_states,)
 
         return BaseModelOutput(
             last_hidden_state=hidden_states,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attentions,
         )
 
 
@@ -723,10 +705,7 @@ class AltCLIPPreTrainedModel(PreTrainedModel):
     base_model_prefix = "altclip"
     input_modalities = ("image", "text")
     supports_gradient_checkpointing = True
-    _can_record_outputs = {
-        "hidden_states": AltCLIPEncoderLayer,
-        "attentions": AltCLIPAttention,
-    }
+    _can_record_outputs = {}
     _no_split_module = []
 
     @torch.no_grad()
@@ -822,6 +801,10 @@ class AltCLIPVisionModel(AltCLIPPreTrainedModel):
     config: AltCLIPVisionConfig
     main_input_name = "pixel_values"
     input_modalities = ("image",)
+    _can_record_outputs = {
+        "hidden_states": AltCLIPEncoderLayer,
+        "attentions": AltCLIPAttention,
+    }
 
     def __init__(self, config: AltCLIPVisionConfig):
         super().__init__(config)
@@ -880,6 +863,10 @@ class AltCLIPVisionModel(AltCLIPPreTrainedModel):
 )
 class AltRobertaModel(AltCLIPPreTrainedModel):
     config: AltCLIPTextConfig
+    _can_record_outputs = {
+        "hidden_states": AltRobertaLayer,
+        "attentions": AltRobertaAttention,
+    }
 
     # Copied from transformers.models.clap.modeling_clap.ClapTextModel.__init__ with ClapText->AltRoberta
     def __init__(self, config, add_pooling_layer=True):
@@ -904,6 +891,7 @@ class AltRobertaModel(AltCLIPPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
 
+    @check_model_inputs
     @auto_docstring
     # Copied from transformers.models.clap.modeling_clap.ClapTextModel.forward
     def forward(
@@ -913,17 +901,8 @@ class AltRobertaModel(AltCLIPPreTrainedModel):
         token_type_ids: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | BaseModelOutputWithPoolingAndCrossAttentions:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
@@ -961,9 +940,7 @@ class AltRobertaModel(AltCLIPPreTrainedModel):
         encoder_outputs = self.encoder(
             embedding_output,
             attention_mask=extended_attention_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
+            **kwargs,
         )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
@@ -971,14 +948,16 @@ class AltRobertaModel(AltCLIPPreTrainedModel):
         return BaseModelOutputWithPooling(
             last_hidden_state=sequence_output,
             pooler_output=pooled_output,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
         )
 
 
 class AltCLIPTextModel(AltCLIPPreTrainedModel):
     config: AltCLIPTextConfig
     input_modalities = ("text",)
+    _can_record_outputs = {
+        "hidden_states": AltRobertaLayer,
+        "attentions": AltRobertaAttention,
+    }
 
     def __init__(self, config):
         super().__init__(config)
@@ -996,7 +975,7 @@ class AltCLIPTextModel(AltCLIPPreTrainedModel):
     def resize_token_embeddings(self, new_num_tokens: int | None = None) -> nn.Embedding:
         return super().resize_token_embeddings(new_num_tokens)
 
-    @can_return_tuple
+    @check_model_inputs
     @auto_docstring
     def forward(
         self,
@@ -1005,10 +984,7 @@ class AltCLIPTextModel(AltCLIPPreTrainedModel):
         token_type_ids: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
-        output_attentions: bool | None = None,
-        return_dict: bool | None = None,
-        output_hidden_states: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithPoolingAndProjection:
         r"""
         Examples:
@@ -1028,17 +1004,13 @@ class AltCLIPTextModel(AltCLIPPreTrainedModel):
         >>> pooled_output = outputs.pooler_output  # pooled CLS states
         ```"""
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         outputs = self.roberta(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
+            **kwargs,
         )
 
         # last module outputs
@@ -1054,13 +1026,15 @@ class AltCLIPTextModel(AltCLIPPreTrainedModel):
         return BaseModelOutputWithPoolingAndProjection(
             last_hidden_state=projection_state,
             pooler_output=pooler_output,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
         )
 
 
 class AltCLIPModel(AltCLIPPreTrainedModel):
     config: AltCLIPConfig
+    _can_record_outputs = {
+        "hidden_states": AltCLIPEncoderLayer,
+        "attentions": AltCLIPAttention,
+    }
 
     def __init__(self, config: AltCLIPConfig):
         super().__init__(config)
@@ -1124,7 +1098,6 @@ class AltCLIPModel(AltCLIPPreTrainedModel):
             attention_mask=attention_mask,
             position_ids=position_ids,
             token_type_ids=token_type_ids,
-            return_dict=True,
             **kwargs,
         )
         pooled_output = text_outputs.pooler_output
@@ -1168,7 +1141,7 @@ class AltCLIPModel(AltCLIPPreTrainedModel):
 
         return vision_outputs
 
-    @can_return_tuple
+    @check_model_inputs
     @auto_docstring
     def forward(
         self,
