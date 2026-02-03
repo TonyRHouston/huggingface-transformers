@@ -457,7 +457,7 @@ class DeepseekV32Attention(nn.Module):
         # Output projection
         attn_output = x.transpose(1, 2).reshape(B, S, -1).contiguous()  # [B,S,H*V]
         attn_output = self.o_proj(attn_output)  # [B,S,hidden]
-        return attn_output, None, None
+        return attn_output, scores
 
 
 class DeepseekV32Moe(nn.Module):
