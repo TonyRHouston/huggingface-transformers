@@ -94,19 +94,13 @@ class GptOssExperts(nn.Module):
         with torch.no_grad():
             expert_mask = torch.nn.functional.one_hot(router_indices, num_classes=num_experts + 1)
             expert_mask = expert_mask.permute(2, 1, 0)
-            # we sum on the top_k and on the sequence lenght to get which experts
-            # are hit this time around
             expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
         for expert_idx in expert_hitted[:-1]:
             with torch.no_grad():
                 _, token_idx = torch.where(expert_mask[expert_idx[0]])
             current_state = hidden_states[token_idx]
             gate_up = current_state @ self.gate_up_proj[expert_idx] + self.gate_up_proj_bias[expert_idx]
-            gate, up = gate_up[..., ::2], gate_up[..., 1::2]
-            gate = gate.clamp(min=None, max=self.limit)
-            up = up.clamp(min=-self.limit, max=self.limit)
-            glu = gate * torch.sigmoid(gate * self.alpha)
-            gated_output = (up + 1) * glu
+            gated_output = self._apply_gate(gate_up)
             out = gated_output @ self.down_proj[expert_idx] + self.down_proj_bias[expert_idx]
             weighted_output = out[0] * routing_weights[token_idx, expert_idx, None]
             next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
