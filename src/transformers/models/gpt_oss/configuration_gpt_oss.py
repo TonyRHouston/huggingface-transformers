@@ -42,6 +42,7 @@ class GptOssConfig(PreTrainedConfig):
         "layers.*.mlp.experts.gate_up_proj_bias": "grouped_gemm",
         "layers.*.mlp.experts.down_proj": "grouped_gemm",
         "layers.*.mlp.experts.down_proj_bias": "grouped_gemm",
+        "layers.*.mlp.experts": "all_reduce",
     }
 
     def __init__(

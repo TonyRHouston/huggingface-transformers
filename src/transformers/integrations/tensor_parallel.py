@@ -951,14 +951,18 @@ class GroupedGemmParallel(TensorParallelLayer):
             )
         local_num_experts = global_num_experts // self.device_mesh.size()
         shard_size = local_num_experts
-        start = device.index * shard_size
-        end = (device.index+1) * shard_size
+        if isinstance(device, torch.device):
+            device = device.index if device.index is not None else 0
+        start = device * shard_size
+        end = (device+1) * shard_size
         # special case we don't "shard" just send this entire tensor to the correct rank.
         if start <= tensor_idx < end:
             # this tensor does need to be materialized on this device:
             return param[:].to(device=device)
-        else:
-            return []
+        elif len(param.get_shape()) >=1:
+            return torch.empty([], dtype=dtype, device=device)
+        else: # bias case
+            return param[:].to(device=device, dtype=dtype)
 
     def get_expected_sharded_shape(self, full_shape: tuple[int, ...] | torch.Size) -> tuple[int, ...]:
         # GroupedGemm shards on dim 0 (experts dimension)
@@ -1294,7 +1298,7 @@ def shard_and_distribute_module(
             tp_layer.empty_param = empty_param
             tp_layer.device_mesh = device_mesh
             tp_layer.rank = rank
-            param = tp_layer.shard_tensor(param, tensor_idx=None, dtype=param_casting_dtype)
+            param = tp_layer.shard_tensor(param, tensor_idx=None, dtype=param_casting_dtype, device=rank)
             if is_contiguous:
                 param = param.contiguous()
         except NotImplementedError as e:
