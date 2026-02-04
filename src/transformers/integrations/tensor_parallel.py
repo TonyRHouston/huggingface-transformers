@@ -461,7 +461,7 @@ class _AllReduceBackward(torch.autograd.Function):
         device_mesh = ctx.device_mesh
         if device_mesh.size() == 1:
             return grad_output, None
-        dist.all_reduce(grad_output, op=dist.ReduceOp.SUM, group=device_mesh.get_group())
+        dist.all_reduce(grad_output, op=dist.ReduceOp.SUM, group=device_mesh.get_group(), async_op=False)
         return grad_output, None
 
 
@@ -472,7 +472,7 @@ class _AllReduceForward(torch.autograd.Function):
     def forward(ctx, x, device_mesh):
         if device_mesh.size() == 1:
             return x
-        dist.all_reduce(x, op=dist.ReduceOp.SUM, group=device_mesh.get_group())
+        dist.all_reduce(x, op=dist.ReduceOp.SUM, group=device_mesh.get_group(), async_op=False)
         return x
 
     @staticmethod
@@ -947,7 +947,6 @@ class GroupedGemmParallel(TensorParallelLayer):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
 
     def shard_tensor(
         self, param: torch.Tensor, tensor_idx: int | None = None, device=None, dtype=None
