@@ -98,6 +98,8 @@ class IdeficsProcessorTest(ProcessorTesterMixin, unittest.TestCase):
         )
 
         self.assertEqual(processor.tokenizer.get_vocab(), tokenizer_add_kwargs.get_vocab())
+        if not isinstance(processor.tokenizer, self._get_component_class_from_processor("tokenizer")):
+            raise ValueError("We got here!")
         self.assertIsInstance(processor.tokenizer, self._get_component_class_from_processor("tokenizer"))
 
         self.assertEqual(processor.image_processor.to_json_string(), image_processor_add_kwargs.to_json_string())
