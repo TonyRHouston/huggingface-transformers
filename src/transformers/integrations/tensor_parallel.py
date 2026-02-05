@@ -723,28 +723,6 @@ class ColwiseParallel(TensorParallelLayer):
         shape[dim] = end - start
         return tuple(shape)
 
-
-class AllReduce(TensorParallelLayer):
-    """
-    Column-wise parallel: weight is sharded on dim -2 (output features).
-    Forward: input replicated -> output sharded on last dim.
-    If gather_output=True, output is all-gathered to produce full tensor.
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def _prepare_input_fn(mod, inputs, device_mesh):
-        if not getattr(mod, "_modified_for_tp", False):
-            mod.num_experts = mod.num_experts // device_mesh.size()
-            mod._modified_for_tp = True
-        return inputs
-
-    def _prepare_output_fn(self, mod, outputs, device_mesh):
-        return all_reduce_forward(outputs, device_mesh)
-
-
 class RowwiseParallel(TensorParallelLayer):
     """
     Row-wise parallel: weight is sharded on dim -1 (input features).
@@ -1080,6 +1058,10 @@ class MoeTensorParalellExperts(TensorParallelLayer):
 
     @staticmethod
     def _prepare_input_fn(mod, inputs, device_mesh):
+        if not getattr(mod, "_modified_for_tp", False):
+            mod.num_experts = mod.num_experts // device_mesh.size()
+            mod._modified_for_tp = True
+
         # inputs = (hidden_states, top_k_index, top_k_weights)
         hidden_states = inputs[0]
         top_k_index = inputs[1]
@@ -1124,7 +1106,6 @@ class ParallelInterface(GeneralInterface):
             "grouped_gemm": GroupedGemmParallel(),
             "ep_router": RouterParallel(),
             "moe_tp_experts": MoeTensorParalellExperts(),
-            "all_reduce": AllReduce(),
         }
         if is_torch_available() and _torch_distributed_available
         else {}
