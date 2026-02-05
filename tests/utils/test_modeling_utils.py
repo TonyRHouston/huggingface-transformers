@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 import glob
+import importlib
 import json
 import os
 import os.path
@@ -34,6 +35,7 @@ from huggingface_hub import HfApi, snapshot_download, split_torch_state_dict_int
 from parameterized import parameterized
 from pytest import mark
 
+import transformers.models.clip.modeling_clip as modeling_clip
 from transformers import (
     AutoConfig,
     AutoModel,
@@ -43,6 +45,8 @@ from transformers import (
     BartForConditionalGeneration,
     BartModel,
     CLIPTextModelWithProjection,
+    CLIPVisionConfig,
+    CLIPVisionModel,
     DynamicCache,
     GPT2Config,
     GPT2LMHeadModel,
@@ -3732,3 +3736,29 @@ class TestGetEncoder(unittest.TestCase):
         assert image_encoder is model.model.vision_tower, (
             f"LLaVA get_encoder(modality='image') should return vision_tower, got {type(image_encoder)}"
         )
+
+
+@require_torch
+class TestCheckModelInputsReload(unittest.TestCase):
+    # See https://github.com/linkedin/Liger-Kernel/pull/1061 and
+    # https://github.com/huggingface/transformers/issues/43761
+    def test_hidden_states_after_module_reload(self):
+        config = CLIPVisionConfig(
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            image_size=30,
+            patch_size=10,
+        )
+        pixel_values = torch.randn(1, 3, 30, 30, device=torch_device)
+
+        model = CLIPVisionModel(config).to(torch_device)
+        outputs = model(pixel_values=pixel_values, output_hidden_states=True)
+        self.assertIsNotNone(outputs.hidden_states)
+
+        importlib.reload(modeling_clip)
+
+        model_after_reload = CLIPVisionModel(config).to(torch_device)
+        outputs_after_reload = model_after_reload(pixel_values=pixel_values, output_hidden_states=True)
+        self.assertIsNotNone(outputs_after_reload.hidden_states)

@@ -997,9 +997,17 @@ def check_model_inputs(func=None, *, tie_last_hidden_states=True):
                 for name, module in self.named_modules():
                     for key, specs in capture_tasks:
                         # The second check is for multimodals where only backbone layer suffix is available
-                        if (specs.target_class is not None and isinstance(module, specs.target_class)) or (
-                            specs.class_name is not None and name.endswith(specs.class_name)
-                        ):
+                        if specs.target_class is not None:
+                            target_cls = specs.target_class
+                            module_cls = module.__class__
+                            matches_target_class = isinstance(module, target_cls) or (
+                                module_cls.__name__ == target_cls.__name__
+                                and module_cls.__module__ == target_cls.__module__
+                            )  # this is to make sure we attach hooks in case of module reloading
+                        else:
+                            matches_target_class = False
+
+                        if matches_target_class or (specs.class_name is not None and name.endswith(specs.class_name)):
                             if specs.layer_name is not None and specs.layer_name not in name:
                                 continue
                             # Monkey patch forward
