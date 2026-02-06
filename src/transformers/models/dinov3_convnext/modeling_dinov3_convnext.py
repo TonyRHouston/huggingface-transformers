@@ -23,7 +23,7 @@ from ...backbone_utils import BackboneMixin
 from ...modeling_outputs import BackboneOutput, BaseModelOutputWithPoolingAndNoAttention
 from ...modeling_utils import PreTrainedModel
 from ...utils import auto_docstring, logging
-from ...utils.generic import can_return_tuple
+from ...utils.generic import check_model_inputs
 from .configuration_dinov3_convnext import DINOv3ConvNextConfig
 
 
@@ -200,6 +200,8 @@ class DINOv3ConvNextPreTrainedModel(PreTrainedModel):
 
 @auto_docstring
 class DINOv3ConvNextModel(DINOv3ConvNextPreTrainedModel):
+    _can_record_outputs = {"hidden_states": DINOv3ConvNextStage}
+
     def __init__(self, config: DINOv3ConvNextConfig):
         super().__init__(config)
         self.config = config
@@ -208,22 +210,13 @@ class DINOv3ConvNextModel(DINOv3ConvNextPreTrainedModel):
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.post_init()
 
-    @can_return_tuple
+    @check_model_inputs(tie_last_hidden_states=False)
     @auto_docstring
-    def forward(
-        self, pixel_values: torch.FloatTensor, output_hidden_states: bool | None = None, **kwargs
-    ) -> BaseModelOutputWithPoolingAndNoAttention:
+    def forward(self, pixel_values: torch.FloatTensor, **kwargs) -> BaseModelOutputWithPoolingAndNoAttention:
         hidden_states = pixel_values
-
-        output_hidden_states = output_hidden_states or self.config.output_hidden_states
-        all_hidden_states = [hidden_states] if output_hidden_states else []
 
         for stage in self.stages:
             hidden_states = stage(hidden_states)
-
-            # store intermediate stage outputs
-            if output_hidden_states:
-                all_hidden_states.append(hidden_states)
 
         # make global representation, a.k.a [CLS] token
         pooled_output = self.pool(hidden_states)
@@ -239,13 +232,15 @@ class DINOv3ConvNextModel(DINOv3ConvNextPreTrainedModel):
         return BaseModelOutputWithPoolingAndNoAttention(
             last_hidden_state=hidden_states,
             pooler_output=hidden_states[:, 0],
-            hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
+            hidden_states=None,  # injected by @check_model_inputs when requested
         )
 
 
 @auto_docstring
 class DINOv3ConvNextBackbone(BackboneMixin, DINOv3ConvNextPreTrainedModel):
     config: DINOv3ConvNextConfig
+    _can_record_outputs = {"hidden_states": DINOv3ConvNextStage}
+    has_attentions = False
 
     def __init__(self, config: DINOv3ConvNextConfig):
         super().__init__(config)
@@ -259,33 +254,23 @@ class DINOv3ConvNextBackbone(BackboneMixin, DINOv3ConvNextPreTrainedModel):
     def get_input_embeddings(self):
         return None
 
-    @can_return_tuple
+    @check_model_inputs(tie_last_hidden_states=False)
     @auto_docstring
-    def forward(
-        self,
-        pixel_values: torch.FloatTensor,
-        output_hidden_states: bool | None = None,
-        **kwargs,
-    ) -> BackboneOutput:
-        if output_hidden_states is None:
-            output_hidden_states = self.config.output_hidden_states
-
+    def forward(self, pixel_values: torch.FloatTensor, **kwargs) -> BackboneOutput:
         hidden_states = pixel_values
-        all_hidden_states: list[torch.Tensor] = [hidden_states]
 
-        for stage in self.stages:
-            hidden_states = stage(hidden_states)
-            all_hidden_states.append(hidden_states)
-
-        # hidden_states are already in NCHW (batch_size, channels, height, width) format
         feature_maps: list[torch.Tensor] = []
-        for stage, hidden_states in zip(self.stage_names, all_hidden_states):
-            if stage in self.out_features:
+        if "stem" in self.out_features:
+            feature_maps.append(hidden_states)
+
+        for name, stage in zip(self.stage_names[1:], self.stages):
+            hidden_states = stage(hidden_states)
+            if name in self.out_features:
                 feature_maps.append(hidden_states)
 
         return BackboneOutput(
             feature_maps=tuple(feature_maps),
-            hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
+            hidden_states=None,  # injected by @check_model_inputs when requested
         )
 
 

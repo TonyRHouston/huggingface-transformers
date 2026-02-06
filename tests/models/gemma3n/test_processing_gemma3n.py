@@ -15,7 +15,13 @@
 import unittest
 
 from transformers.models.gemma3n import Gemma3nProcessor
-from transformers.testing_utils import require_sentencepiece, require_torch, require_torchaudio, require_vision
+from transformers.testing_utils import (
+    require_numba,
+    require_sentencepiece,
+    require_torch,
+    require_torchaudio,
+    require_vision,
+)
 
 from ...test_processing_common import ProcessorTesterMixin
 from .test_feature_extraction_gemma3n import floats_list
@@ -26,6 +32,7 @@ from .test_feature_extraction_gemma3n import floats_list
 @require_torchaudio
 @require_vision
 @require_sentencepiece
+@require_numba
 class Gemma3nProcessorTest(ProcessorTesterMixin, unittest.TestCase):
     processor_class = Gemma3nProcessor
     model_id = "hf-internal-testing/namespace-google-repo_name-gemma-3n-E4B-it"
