@@ -31,9 +31,10 @@ from ...generation.logits_process import LogitsProcessorList
 from ...utils.logging import logging
 from ...utils.metrics import ContinuousBatchProcessorMetrics, attach_tracer, traced
 from .cache import PagedAttentionCache
-from .input_ouputs import ContinuousBatchingIOs, attn_mask_is_needed
+from .input_ouputs import ContinuousBatchingIOs
 from .requests import GenerationOutput, RequestState, RequestStatus, logger
 from .scheduler import SCHEDULER_MAPPING, FIFOScheduler, Scheduler
+from .utils import attn_mask_is_needed
 
 
 """
