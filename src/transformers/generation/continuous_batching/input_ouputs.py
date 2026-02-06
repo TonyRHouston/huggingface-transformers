@@ -22,7 +22,7 @@ from transformers.configuration_utils import PretrainedConfig
 
 from ...utils.metrics import traced
 from .cache import PagedAttentionCache
-from .requests import TMP_TOKEN_ID, RequestState
+from .requests import TMP_TOKEN_ID, FutureRequestState, RequestState
 
 
 def attn_mask_is_needed(config: PretrainedConfig) -> bool:
@@ -197,11 +197,12 @@ class ContinuousBatchingIOs:
         self.model_dtype = model_dtype
         self.sliding_window = 1 if getattr(config, "sliding_window", None) is None else config.sliding_window
         # Setup accumulators
-        self.requests_in_batch: list[RequestState] = []
+        self.requests_in_batch: list[FutureRequestState] = []
         self.actual_query_length = 0
         self.actual_key_length = 0
         self.actual_batch_size = 0
-        self.actual_index_sizes = [(0, 0) for _ in range(cache.num_groups)]
+        self.actual_read_sizes = [0 for _ in range(cache.num_groups)]
+        self.actual_write_sizes = [0 for _ in range(cache.num_groups)]
         # Setup static tensors
         self.setup_static_tensors()
         self.reset_static_tensors(full_reset=True)
@@ -310,16 +311,18 @@ class ContinuousBatchingIOs:
         temporary token at the end of the requests for which there will a new token.
         """
         # Keep track of this requests in the batch, which will be useful to update the batch later
-        self.requests_in_batch = requests_in_batch
-        if not self.requests_in_batch:
+        if not requests_in_batch:
             raise ValueError("No requests in batch")
 
         # Reset the static tensors used for storage
         self.reset_static_tensors()  # FIXME: why does this make the generation faster?
         # Reset accumulators
+        self.requests_in_batch = []
         self.actual_query_length = 0
         self.actual_key_length = 0
         self.actual_batch_size = 0
+        self.actual_read_sizes = [0 for _ in range(self.cache.num_groups)]
+        self.actual_write_sizes = [0 for _ in range(self.cache.num_groups)]
 
         # Prepare accumulators
         input_ids = []
@@ -331,7 +334,7 @@ class ContinuousBatchingIOs:
         write_index = [[] for _ in range(self.cache.num_groups)]
 
         # Go through all the requests in the batch
-        for state in self.requests_in_batch:
+        for state in requests_in_batch:
             # First we retrieve the lengths related to the request
             past_length = state.position_offset
             query_length = len(state.tokens_to_process)
@@ -362,9 +365,12 @@ class ContinuousBatchingIOs:
             )
 
             # If the request has no remaining prefill tokens, it means the next token prediction is relevant
-            if not state.remaining_prefill_tokens:
+            has_new_token = not state.remaining_prefill_tokens
+            if has_new_token:
                 logits_indices.append(cumulative_seqlens_q[-1] - 1)
                 state.generated_tokens.append(TMP_TOKEN_ID)
+
+            self.requests_in_batch.append(FutureRequestState(state, has_new_token, 0))
 
         # When looping over request is done, we can build the actual tensors. This is faster than modifying the static
         # tensors inside the loop.
@@ -394,7 +400,8 @@ class ContinuousBatchingIOs:
         for i, group_read_indices, group_write_indices in zip(count(), read_index, write_index):
             self.read_index_storage[i][: len(group_read_indices)] = to_tensor(group_read_indices)
             self.write_index_storage[i][: len(group_write_indices)] = to_tensor(group_write_indices)
-            self.actual_index_sizes[i] = (len(group_read_indices), len(group_write_indices))
+            self.actual_read_sizes[i] = len(group_read_indices)
+            self.actual_write_sizes[i] = len(group_write_indices)
 
     def get_model_kwargs(self, padded_q_size: int = 0, padded_kv_cache_size: int = 0) -> dict[str, Any]:
         """Get model keyword arguments for the current batch, eventually padding the query dimension to (padded_q_size)
@@ -433,9 +440,9 @@ class ContinuousBatchingIOs:
             # FIXME: is there another way to avoid this? It has a very slight impact on performance (~5 tok/s)
 
         # For the attributes that are lists of tensors, we construct list of tensor references
-        for i, (read_index_size, write_index_size) in enumerate(self.actual_index_sizes):
-            read_index_size = padded_kv_size if use_padding else read_index_size
-            write_index_size = padded_q_size if use_padding else write_index_size
+        for i in range(self.cache.num_groups):
+            read_index_size = padded_kv_size if use_padding else self.actual_read_sizes[i]
+            write_index_size = padded_q_size if use_padding else self.actual_write_sizes[i]
             kwargs.read_index.append(self.read_index_storage[i][:read_index_size])
             kwargs.write_index.append(self.write_index_storage[i][:write_index_size])
 

@@ -312,3 +312,12 @@ class RequestState:
         )
         new_state._true_initial_tokens = self._true_initial_tokens + len(self.initial_tokens)
         return new_state
+
+
+class FutureRequestState:
+    """Tracks the current state of a request and the relevant information to update it."""
+
+    def __init__(self, state: RequestState, has_new_token: bool, complete_blocks: int) -> None:
+        self.state = state
+        self.has_new_token = has_new_token
+        self.complete_blocks = complete_blocks

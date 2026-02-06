@@ -243,7 +243,6 @@ class PagedAttentionCache:
         # We only use prefix sharing if the whole model has only full attention layers and block sharing is allowed
         self.use_prefix_sharing = allow_block_sharing and group_types == ["full_attention"]
         self._block_manager = BlockManager(num_blocks, self.block_size)
-        self.blocks_to_complete: dict[str, int] = {}
         self._total_prefix_length: int = 0  # a counter to measure the impact of prefix sharing, also used in tests
 
     def will_allocation_be_successful(self, num_requested_blocks: int, allocated_blocks: int) -> bool:
@@ -400,12 +399,11 @@ class PagedAttentionCache:
         self._total_prefix_length += prefix_length
         return prefix_length
 
-    def mark_shareable_blocks_as_complete(self, state: RequestState) -> None:
+    def mark_shareable_blocks_as_complete(self, state: RequestState, num_complete_blocks: int) -> None:
         """Marks the blocks allocated to a request (state) as complete if they are shareable and they have been computed
         in the forward pass. A complete block is a block where the KV cache has been fully computed: if the block has
         enough space to hold the cache for N tokens, the block is marked as complete when the cache data is present for
         the N tokens. If block sharing is off, this is a no-op."""
-        num_complete_blocks = 0 if not self.allow_block_sharing else self.blocks_to_complete.pop(state.request_id)
         if num_complete_blocks == 0:
             return None
         for cm in self.group_cache_managers:

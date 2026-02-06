@@ -131,8 +131,6 @@ class ContinuousBatchProcessor:
 
         # Retrieve the size of the sliding window if there is one
         self.sliding_window = 1 if getattr(config, "sliding_window", None) is None else config.sliding_window
-        # Accumulator for batch scheduling
-        self.requests_in_batch: list[RequestState] = []
         # Cuda graphs for the generation step
         self.q_padding_intervals = q_padding_intervals
         self.kv_padding_intervals = kv_padding_intervals
@@ -240,12 +238,11 @@ class ContinuousBatchProcessor:
             else:
                 raise RuntimeError("No requests can be scheduled and no request can be offloaded.")
         # If it's an empty list, it means we have no requests to process
-        self.requests_in_batch = requests_in_batch
-        if not self.requests_in_batch:
+        if not requests_in_batch:
             return False
 
         # Otherwise, we can continue with the non-empty batch
-        self.metrics.record_batch_metrics(self.requests_in_batch)
+        self.metrics.record_batch_metrics(requests_in_batch)
         self.inputs_and_outputs.prepare_batch_tensors(requests_in_batch)
 
         # Record the memory metrics of the KV cache
@@ -255,7 +252,7 @@ class ContinuousBatchProcessor:
             cumulative_seqlens_k = self.inputs_and_outputs.cumulative_seqlens_k
             ck = max(cumulative_seqlens_k[layer_type][-1] for layer_type in cumulative_seqlens_k)
             logger.debug(
-                f"Scheduled: {len(self.requests_in_batch)}, Waiting: {len(self.scheduler.waiting_requests)}, "
+                f"Scheduled: {len(requests_in_batch)}, Waiting: {len(self.scheduler.waiting_requests)}, "
                 f"Active: {len(self.scheduler.active_requests)}. cum Q: {cumulative_seqlens_q[-1]}. "
                 f"cum KV: {ck}, free blocks: {self.cache.get_num_free_blocks()}"
             )
@@ -270,11 +267,13 @@ class ContinuousBatchProcessor:
     @traced
     def update_batch(self) -> None:
         """Update request states based on generated tokens."""
-        new_tokens = self.inputs_and_outputs.output_ids[: len(self.requests_in_batch)].tolist()
+        requests_in_batch = self.inputs_and_outputs.requests_in_batch
+        new_tokens = self.inputs_and_outputs.output_ids[: len(requests_in_batch)].tolist()
         current_logits_index = 0
-        for state in self.requests_in_batch:
-            # If the request has no remaining prompt ids, it means prefill has already ended or just finished
-            if len(state.remaining_prefill_tokens) == 0:
+        for future_state in requests_in_batch:
+            state = future_state.state
+            # If the request has a new token, it means prefill has already ended or just finished
+            if future_state.has_new_token:
                 # If there is just one temporary token, it means prefill just ended
                 if state.generated_len() == 1:
                     self.metrics.record_ttft_metric(state.created_time, state.request_id)
@@ -287,7 +286,7 @@ class ContinuousBatchProcessor:
                 # Update the request and stop if it is complete
                 is_finished = state.update_and_check_completion(token)
                 # We mark the completed blocks as such
-                self.cache.mark_shareable_blocks_as_complete(state)
+                self.cache.mark_shareable_blocks_as_complete(state, future_state.complete_blocks)
                 if is_finished:
                     self.metrics.record_request_completion(state.created_time, state.request_id)
                     self.scheduler.finish_request(state.request_id, evict_from_cache=(not self.manual_eviction))
@@ -295,7 +294,7 @@ class ContinuousBatchProcessor:
                 self._maybe_send_output(state)
             #  Otherwise, the request is still prefilling, but the prefill has been split
             elif state.status == RequestStatus.PREFILLING_SPLIT:
-                self.cache.mark_shareable_blocks_as_complete(state)
+                self.cache.mark_shareable_blocks_as_complete(state, future_state.complete_blocks)
                 state.status = RequestStatus.SPLIT_PENDING_REMAINDER
             else:
                 raise ValueError(f"Request {state.request_id} is in an unexpected state: {state.status}")
@@ -329,7 +328,7 @@ class ContinuousBatchProcessor:
     @traced
     def handle_batch_error(self, error):
         """Handle errors during batch processing."""
-        failed_reqs = self.requests_in_batch
+        failed_reqs = [future_state.state for future_state in self.inputs_and_outputs.requests_in_batch]
         for req in failed_reqs:
             self._handle_request_error(error, req)
             self.scheduler.finish_request(req.request_id)
@@ -375,9 +374,8 @@ class ContinuousBatchProcessor:
         # If inputs are static sized, we find the padded sizes of the queries and keys/values
         if self._pad_inputs:
             actual_query_length = self.inputs_and_outputs.actual_query_length
-            actual_index_sizes = self.inputs_and_outputs.actual_index_sizes
             padded_q = pad_by_intervals(actual_query_length, self.max_batch_tokens, self.q_padding_intervals)
-            max_read_index_size = max(actual_index_sizes[i][0] for i in range(self.cache.num_groups))
+            max_read_index_size = max(self.inputs_and_outputs.actual_read_sizes)
             # The space planned for query tokens will be added later, so we remove it from the space planned for KV
             padded_read_index_size = pad_by_intervals(
                 max_read_index_size, self.cache.num_pages, self.kv_padding_intervals

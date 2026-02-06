@@ -17,7 +17,7 @@ from collections import deque
 
 from ...utils.metrics import attach_tracer, traced
 from .cache import PagedAttentionCache
-from .requests import RequestState, RequestStatus, logger
+from .requests import FutureRequestState, RequestState, RequestStatus, logger
 
 
 class Scheduler(ABC):
@@ -55,7 +55,7 @@ class Scheduler(ABC):
         self.waiting_requests_order.append(state.request_id)
 
     @abstractmethod
-    def schedule_batch(self, token_budget: int, cache_budget: int) -> list[RequestState] | None:
+    def schedule_batch(self, token_budget: int, cache_budget: int) -> list[FutureRequestState] | None:
         """Schedules requests for the next batch based on available token and cache budgets. This method selects which
         requests should be processed in the current batch, considering the budgets and the scheduler's prioritization
         rules. The token_budget is the maximum number of tokens that can be processed in a batch, and the cache_budget
@@ -198,7 +198,7 @@ class Scheduler(ABC):
         cache_budget: int,
         request_ids_to_remove_from_waiting: set[str],
         safety_margin: float = 0.0,
-    ) -> tuple[list[RequestState], bool]:
+    ) -> tuple[list[FutureRequestState], bool]:
         """Schedules candidate requests for the current batch.
 
         This method contains the common logic shared by all schedulers: it checks token and cache budgets, allocates
@@ -247,7 +247,6 @@ class Scheduler(ABC):
             # If this point is reached, it means we can safely schedule the request
             self._schedule_request(state, request_tokens, token_budget, request_ids_to_remove_from_waiting)
             request_len = len(state.tokens_to_process)  # it may change after scheduling
-            scheduled_requests.append(state)
 
             # Update the token and cache budgets
             token_budget -= request_len
@@ -258,7 +257,12 @@ class Scheduler(ABC):
                 tokens_in_current_block = state.current_len() % self.cache.block_size
                 tokens_after_forward = tokens_in_current_block + request_len
                 complete_blocks = tokens_after_forward // self.cache.block_size
-                self.cache.blocks_to_complete[state.request_id] = complete_blocks
+            else:
+                complete_blocks = 0
+
+            # Store the future request state
+            has_new_token = not state.remaining_prefill_tokens
+            scheduled_requests.append(FutureRequestState(state, has_new_token, complete_blocks))
 
             # Remove the request from the waiting queue and mark it as removed
             req_id = state.request_id
@@ -295,7 +299,7 @@ class FIFOScheduler(Scheduler):
         self.safety_margin = safety_margin
 
     @traced
-    def schedule_batch(self, token_budget: int, cache_budget: int) -> list[RequestState] | None:
+    def schedule_batch(self, token_budget: int, cache_budget: int) -> list[FutureRequestState] | None:
         priority_states: list[RequestState] = []
         second_priority_states: list[RequestState] = []
 
@@ -339,7 +343,7 @@ class PrefillFirstScheduler(Scheduler):
     decoding requests."""
 
     @traced
-    def schedule_batch(self, token_budget: int, cache_budget: int) -> list[RequestState] | None:
+    def schedule_batch(self, token_budget: int, cache_budget: int) -> list[FutureRequestState] | None:
         priority_states: list[RequestState] = []
         second_priority_states: list[RequestState] = []
 
