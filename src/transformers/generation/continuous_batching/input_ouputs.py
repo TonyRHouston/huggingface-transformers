@@ -22,8 +22,8 @@ from transformers.configuration_utils import PretrainedConfig
 
 from ...utils.metrics import traced
 from .cache import PagedAttentionCache
-from .requests import TMP_TOKEN_ID, FutureRequestState, RequestState
-from .utils import attn_mask_is_needed, build_attention_mask
+from .requests import TMP_TOKEN_ID, FutureRequestState
+from .utils import aligned_divide, attn_mask_is_needed, build_attention_mask
 
 
 @dataclass
@@ -125,28 +125,32 @@ class ContinuousBatchingIOs:
         num_pages = self.cache.num_blocks * self.cache.block_size
         pin_memory = self.device.type == "cpu"
 
-        # Some tensors always have the same shape regardless of the model
-        self.input_ids = torch.empty((1, max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
-        self.position_ids = torch.empty((1, max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
-        self.cumulative_seqlens_q = torch.empty(
-            (max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory
+        # Small inputs are allocated as slices in a larget tensor to reduce D2H times (32 * 4b = 128 bytes aligned)
+        bulk_size = aligned_divide(max_batch_tokens + 1, 1, 32)
+        self._bulk_input_tensor = torch.empty(
+            (6, bulk_size), dtype=torch.int32, device=self.device, pin_memory=pin_memory
         )
-        self.max_seqlen_q = 0
-        self.logits_indices = torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
-        self.output_ids = torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
 
-        # For some kwargs, we have a dict of tensors with as many items as there are attention types
+        self.input_ids = self._bulk_input_tensor[0, :max_batch_tokens]
+        self.position_ids = self._bulk_input_tensor[1, :max_batch_tokens]
+        self.cumulative_seqlens_q = self._bulk_input_tensor[2, :max_batch_tokens + 1]
+        self.logits_indices = self._bulk_input_tensor[3, :max_batch_tokens]
+        full_attention_cumulative_seqlens_k = self._bulk_input_tensor[4, :max_batch_tokens + 1]
+        sliding_attention_cumulative_seqlens_k = self._bulk_input_tensor[5, :max_batch_tokens + 1]
+
+        # For sequence length of KV, the entries in the dict depend on the model
         self.cumulative_seqlens_k: dict[str, torch.Tensor] = {}
         if self.cache.num_full_attention_groups:
-            self.cumulative_seqlens_k["full_attention"] = torch.empty(
-                (max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory
-            )
+            self.cumulative_seqlens_k["full_attention"] = full_attention_cumulative_seqlens_k
         if self.cache.num_sliding_attention_groups:
-            self.cumulative_seqlens_k["sliding_attention"] = torch.empty(
-                (max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory
-            )
+            self.cumulative_seqlens_k["sliding_attention"] = sliding_attention_cumulative_seqlens_k
+
+        # Output tensor and scalars
+        self.output_ids = torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
+        self.max_seqlen_q = 0
         self.max_seqlen_k = dict.fromkeys(self.cumulative_seqlens_k.keys(), 0)
 
+        # If the attention mask is needed, it is allocated sepaarately
         if attn_mask_is_needed(self.config):
             self.attention_mask = {}
             for layer_type in self.cumulative_seqlens_k.keys():
@@ -180,19 +184,17 @@ class ContinuousBatchingIOs:
         # Compute the slice to reset
         q_len = self.write_index_storage[0].size(-1) if full_reset else self.actual_query_length
         k_len = self.read_index_storage[0].size(-1) if full_reset else self.actual_key_length
-        b_size = self.write_index_storage[0].size(0) if full_reset else self.actual_batch_size
 
-        # Reset the attributes that always have the same shape
-        self.input_ids[:, :q_len].zero_()
-        self.position_ids[:, :q_len].zero_()
-        self.cumulative_seqlens_q[: b_size + 1].zero_()
+        # Reset the attributes part of the bulk input tensor in one kernel
+        self._bulk_input_tensor[:, :q_len+1].zero_()
         self.max_seqlen_q = 0
+
+        # Reset the logits indices and output ids (TODO: logits indices reset might be redundant)
         self.logits_indices[:q_len].fill_(-1)
         self.output_ids[:q_len].fill_(-1)
 
         # Reset the attributes that are either tensors or dict of tensors
         for layer_type in self.cumulative_seqlens_k:
-            self.cumulative_seqlens_k[layer_type][: b_size + 1].zero_()
             self.max_seqlen_k[layer_type] = 0
             if self.attention_mask is not None:
                 self.attention_mask[layer_type][:, :, :q_len, :k_len].fill_(torch.finfo(self.model_dtype).min)
@@ -203,7 +205,7 @@ class ContinuousBatchingIOs:
             self.read_index_storage[i][: q_len + k_len].fill_(-2)  # same
 
     @traced
-    def prepare_batch_tensors(self, requests_in_batch: list[RequestState]) -> None:
+    def prepare_batch_tensors(self, requests_in_batch: list[FutureRequestState]) -> None:
         """Prepare tensors and metadata for the next model forward pass, using the given requests as data. This method:
 
         1. Resets the static tensors from the previous batch
@@ -239,8 +241,9 @@ class ContinuousBatchingIOs:
         write_index = [[] for _ in range(self.cache.num_groups)]
 
         # Go through all the requests in the batch
-        for state in requests_in_batch:
+        for future_state in requests_in_batch:
             # First we retrieve the lengths related to the request
+            state = future_state.state
             past_length = state.position_offset
             query_length = len(state.tokens_to_process)
             seqlens_k = self.cache.get_seqlens_k(past_length, query_length)
@@ -270,20 +273,19 @@ class ContinuousBatchingIOs:
             )
 
             # If the request has no remaining prefill tokens, it means the next token prediction is relevant
-            has_new_token = not state.remaining_prefill_tokens
-            if has_new_token:
+            if future_state.has_new_token:
                 logits_indices.append(cumulative_seqlens_q[-1] - 1)
                 state.generated_tokens.append(TMP_TOKEN_ID)
 
-            self.requests_in_batch.append(FutureRequestState(state, has_new_token, 0))
+            self.requests_in_batch.append(future_state)
 
         # When looping over request is done, we can build the actual tensors. This is faster than modifying the static
         # tensors inside the loop.
         to_tensor = partial(torch.tensor, dtype=torch.int32, device=self.device)
 
         # Those kwargs always have the same type regardless of the model
-        self.input_ids[:, : len(input_ids)] = to_tensor(input_ids)
-        self.position_ids[:, : len(position_ids)] = to_tensor(position_ids)
+        self.input_ids[: len(input_ids)] = to_tensor(input_ids)
+        self.position_ids[: len(position_ids)] = to_tensor(position_ids)
         self.cumulative_seqlens_q[: len(cumulative_seqlens_q)] = to_tensor(cumulative_seqlens_q)
         self.logits_indices[: len(logits_indices)] = to_tensor(logits_indices)
         self.total_seqlen_q = cumulative_seqlens_q[-1]
@@ -321,8 +323,8 @@ class ContinuousBatchingIOs:
 
         # Prepare the kwargs, the attributes that are either tensors or dict of tensors are initialized to empty dicts
         kwargs = PagedAttentionArgs(
-            input_ids=self.input_ids[:, :q_len],
-            position_ids=self.position_ids[:, :q_len],
+            input_ids=self.input_ids[:q_len].unsqueeze(0),
+            position_ids=self.position_ids[:q_len].unsqueeze(0),
             cu_seq_lens_q=self.cumulative_seqlens_q[: b_size + 1],
             max_seqlen_q=self.max_seqlen_q,
             logits_indices=self.logits_indices[:q_len],
