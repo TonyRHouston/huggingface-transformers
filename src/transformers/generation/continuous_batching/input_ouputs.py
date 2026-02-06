@@ -121,6 +121,7 @@ class ContinuousBatchingIOs:
         - `write_index` and `read_index` storage: Cache indexing tensors for each attention group
         - `output_ids`: Storage for generated token IDs
         """
+        num_groups = self.cache.num_groups
         max_batch_tokens = self.cache.max_batch_tokens
         num_pages = self.cache.num_blocks * self.cache.block_size
         pin_memory = self.device.type == "cpu"
@@ -164,14 +165,12 @@ class ContinuousBatchingIOs:
             self.attention_mask = None
 
         # For other kwargs, we need a list of tensors with as many tensors as there are groups
-        self.write_index_storage = [
-            torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
-            for _ in range(self.cache.num_groups)
-        ]
-        self.read_index_storage = [
-            torch.empty((num_pages + max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
-            for _ in range(self.cache.num_groups)
-        ]
+        self.write_index_storage = torch.empty(
+            (num_groups, max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory
+        )
+        self.read_index_storage = torch.empty(
+            (num_groups, num_pages + max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory
+        )
         # For read index, the +T is because there are -1 for seqlen_q when model uses a sliding window
 
     @traced
@@ -182,8 +181,8 @@ class ContinuousBatchingIOs:
         actual_batch_size. If a (full_reset) is requested, the entire tensor storage is reset.
         """
         # Compute the slice to reset
-        q_len = self.write_index_storage[0].size(-1) if full_reset else self.actual_query_length
-        k_len = self.read_index_storage[0].size(-1) if full_reset else self.actual_key_length
+        q_len = self.write_index_storage.size(-1) if full_reset else self.actual_query_length
+        k_len = self.read_index_storage.size(-1) if full_reset else self.actual_key_length
 
         # Reset the attributes part of the bulk input tensor in one kernel
         self._bulk_input_tensor[:, :q_len+1].zero_()
@@ -200,9 +199,8 @@ class ContinuousBatchingIOs:
                 self.attention_mask[layer_type][:, :, :q_len, :k_len].fill_(torch.finfo(self.model_dtype).min)
 
         # Reset the attributes that are lists of tensors
-        for i in range(self.cache.num_groups):
-            self.write_index_storage[i][:q_len].fill_(-2)  # -1 is used to let the cache where new states go
-            self.read_index_storage[i][: q_len + k_len].fill_(-2)  # same
+        self.write_index_storage[:, :q_len].fill_(-2)  # -1 is used to let the cache where new states go
+        self.read_index_storage[:, : q_len + k_len].fill_(-2)  # same
 
     @traced
     def prepare_batch_tensors(self, requests_in_batch: list[FutureRequestState]) -> None:
@@ -305,8 +303,8 @@ class ContinuousBatchingIOs:
         self.read_index = []
         self.write_index = []
         for i, group_read_indices, group_write_indices in zip(count(), read_index, write_index):
-            self.read_index_storage[i][: len(group_read_indices)] = to_tensor(group_read_indices)
-            self.write_index_storage[i][: len(group_write_indices)] = to_tensor(group_write_indices)
+            self.read_index_storage[i, : len(group_read_indices)] = to_tensor(group_read_indices)
+            self.write_index_storage[i,: len(group_write_indices)] = to_tensor(group_write_indices)
             self.actual_read_sizes[i] = len(group_read_indices)
             self.actual_write_sizes[i] = len(group_write_indices)
 
@@ -350,8 +348,8 @@ class ContinuousBatchingIOs:
         for i in range(self.cache.num_groups):
             read_index_size = padded_kv_size if use_padding else self.actual_read_sizes[i]
             write_index_size = padded_q_size if use_padding else self.actual_write_sizes[i]
-            kwargs.read_index.append(self.read_index_storage[i][:read_index_size])
-            kwargs.write_index.append(self.write_index_storage[i][:write_index_size])
+            kwargs.read_index.append(self.read_index_storage[i, :read_index_size])
+            kwargs.write_index.append(self.write_index_storage[i, :write_index_size])
 
         # For the attributes that are dict of tensors, we replace the dict with a tensor if there is only one entry
         layer_types = list(self.cumulative_seqlens_k.keys())
