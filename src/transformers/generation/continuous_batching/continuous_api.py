@@ -17,7 +17,6 @@ import threading
 from abc import abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
-from math import ceil
 from time import perf_counter
 
 import torch
@@ -34,7 +33,7 @@ from .cache import PagedAttentionCache
 from .input_ouputs import ContinuousBatchingIOs
 from .requests import GenerationOutput, RequestState, RequestStatus, logger
 from .scheduler import SCHEDULER_MAPPING, FIFOScheduler, Scheduler
-from .utils import attn_mask_is_needed
+from .utils import attn_mask_is_needed, pad_by_intervals
 
 
 """
@@ -58,15 +57,6 @@ padding in the case of cuda graphs AND torch.compile.
 """
 NUM_Q_PADDING_INTERVALS = 4
 NUM_KV_PADDING_INTERVALS = 8
-
-
-def pad_by_intervals(size: int, max_value: int, nb_intervals: int) -> int:
-    """Return the smallest multiple of (max_value) // (nb_intervals) greater than (size)."""
-    interval_size = max_value // nb_intervals
-    if interval_size == 0:
-        return max_value
-    padded = ceil(size / interval_size) * interval_size if size > 0 else interval_size
-    return min(padded, max_value)
 
 
 # We cannot use `PreTrainedModel` for circular import reasons, so this helps keep track of the basic types

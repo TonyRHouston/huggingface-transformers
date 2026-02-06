@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from math import ceil
 
 import torch
 
@@ -20,6 +21,22 @@ from transformers.configuration_utils import PretrainedConfig
 def attn_mask_is_needed(config: PretrainedConfig) -> bool:
     """Checks if attention mask is needed for the given (config)."""
     return config._attn_implementation in ["paged|eager", "paged|sdpa"]
+
+
+def pad_by_intervals(size: int, max_value: int, nb_intervals: int) -> int:
+    """Return the smallest multiple of (max_value) // (nb_intervals) greater than (size)."""
+    interval_size = max_value // nb_intervals
+    if interval_size == 0:
+        return max_value
+    padded = ceil(size / interval_size) * interval_size if size > 0 else interval_size
+    return min(padded, max_value)
+
+
+def aligned_divide(x: int, divide_by: int, align_to: int) -> int:
+    x = int(ceil(x / divide_by))
+    if x % align_to:
+        x += align_to - (x % align_to)
+    return x
 
 
 def build_attention_mask(
