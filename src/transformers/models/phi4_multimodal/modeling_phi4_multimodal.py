@@ -1626,7 +1626,6 @@ class Phi4MultimodalForCausalLM(Phi4MultimodalPreTrainedModel, GenerationMixin):
         self.post_init()
 
     @check_model_inputs
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
