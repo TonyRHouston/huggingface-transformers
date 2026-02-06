@@ -78,29 +78,19 @@ class PagedAttentionArgs:
 
 
 class ContinuousBatchingIOs:
-    """Manages input/output tensors for continuous batching generation. This class handles the allocation and management
-    of static tensors used during generation steps in continuous batching mode. Allocation is done once at init time.
-
-    The class is responsible for:
-    - Setting up static tensor storage for all generation inputs/outputs
-    - Preparing batch tensors from a list of request states before each forward pass
-    - Building model keyword arguments with optional padding for CUDA graphs/torch.compile
-    - Resetting tensors between batches while minimizing memory operations
-
-    It keeps track of the requests in the current batch as well as the actual number of tokens (Q and KV), sequences in
-    the batch and sizes of indices. This is useful when using padded inputs, for CUDA graphs and/or torch.compile.
+    """A class to hold inputs and outputs for a continuous batching forward pass, using static tensors as storage. The
+    class is meant to be self-contained, so once a set of inputs have been created, the class can be used to update the
+    batch alone.
     """
 
     def __init__(
         self, cache: PagedAttentionCache, config: PretrainedConfig, device: torch.device, model_dtype: torch.dtype
     ) -> None:
-        """Initialize the continuous batching I/O manager.
-
-        Args:
-            cache: The [`PagedAttentionCache`] instance managing the KV cache.
-            config: The model's pretrained configuration.
-            device: The device to allocate tensors on.
-            model_dtype: The data type for model computations.
+        """Initialize the continuous batching I/O manager. Args:
+         - cache: The [`PagedAttentionCache`] instance managing the KV cache. Meant to be unique.
+         - config: The model's pretrained configuration.
+         - device: The device to allocate tensors on. If the device is CPU, then the memory is pinned.
+         - model_dtype: The data type for model computations.
         """
         # Memoize attributes
         self.cache = cache
@@ -131,27 +121,29 @@ class ContinuousBatchingIOs:
         - `write_index` and `read_index` storage: Cache indexing tensors for each attention group
         - `output_ids`: Storage for generated token IDs
         """
+        max_batch_tokens = self.cache.max_batch_tokens
         num_pages = self.cache.num_blocks * self.cache.block_size
+        pin_memory = self.device.type == "cpu"
 
         # Some tensors always have the same shape regardless of the model
-        self.input_ids = torch.empty((1, self.cache.max_batch_tokens), dtype=torch.int32, device=self.device)
-        self.position_ids = torch.empty((1, self.cache.max_batch_tokens), dtype=torch.int32, device=self.device)
+        self.input_ids = torch.empty((1, max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
+        self.position_ids = torch.empty((1, max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
         self.cumulative_seqlens_q = torch.empty(
-            (self.cache.max_batch_tokens + 1,), dtype=torch.int32, device=self.device
+            (max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory
         )
         self.max_seqlen_q = 0
-        self.logits_indices = torch.empty((self.cache.max_batch_tokens,), dtype=torch.int32, device=self.device)
-        self.output_ids = torch.empty((self.cache.max_batch_tokens,), dtype=torch.int32, device=self.device)
+        self.logits_indices = torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
+        self.output_ids = torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
 
         # For some kwargs, we have a dict of tensors with as many items as there are attention types
         self.cumulative_seqlens_k: dict[str, torch.Tensor] = {}
         if self.cache.num_full_attention_groups:
             self.cumulative_seqlens_k["full_attention"] = torch.empty(
-                (self.cache.max_batch_tokens + 1,), dtype=torch.int32, device=self.device
+                (max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory
             )
         if self.cache.num_sliding_attention_groups:
             self.cumulative_seqlens_k["sliding_attention"] = torch.empty(
-                (self.cache.max_batch_tokens + 1,), dtype=torch.int32, device=self.device
+                (max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory
             )
         self.max_seqlen_k = dict.fromkeys(self.cumulative_seqlens_k.keys(), 0)
 
@@ -159,20 +151,21 @@ class ContinuousBatchingIOs:
             self.attention_mask = {}
             for layer_type in self.cumulative_seqlens_k.keys():
                 self.attention_mask[layer_type] = torch.empty(
-                    size=(1, 1, self.cache.max_batch_tokens, num_pages + self.cache.max_batch_tokens),
+                    size=(1, 1, max_batch_tokens, num_pages + max_batch_tokens),
                     dtype=self.model_dtype,
                     device=self.device,
+                    pin_memory=pin_memory,
                 )
         else:
             self.attention_mask = None
 
         # For other kwargs, we need a list of tensors with as many tensors as there are groups
         self.write_index_storage = [
-            torch.empty((self.cache.max_batch_tokens,), dtype=torch.int32, device=self.device)
+            torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
             for _ in range(self.cache.num_groups)
         ]
         self.read_index_storage = [
-            torch.empty((num_pages + self.cache.max_batch_tokens), dtype=torch.int32, device=self.device)
+            torch.empty((num_pages + max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
             for _ in range(self.cache.num_groups)
         ]
         # For read index, the +T is because there are -1 for seqlen_q when model uses a sliding window
