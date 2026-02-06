@@ -107,11 +107,11 @@ class ContinuousBatchingIOs:
         self.actual_read_sizes = [0 for _ in range(cache.num_groups)]
         self.actual_write_sizes = [0 for _ in range(cache.num_groups)]
         # Setup static tensors
-        self.setup_static_tensors()
-        self.reset_static_tensors(full_reset=True)
+        self._setup_static_tensors()
+        self._reset_static_tensors(full_reset=True)
 
     @traced(standalone=True)
-    def setup_static_tensors(self) -> None:
+    def _setup_static_tensors(self) -> None:
         """Allocates static tensors for generation inputs and outputs. This is called only once at init time, to avoid
         repeated allocations and enable CUDA graphs. All tensors are allocated with maximum possible sizes.
         The allocated tensors are:
@@ -174,7 +174,7 @@ class ContinuousBatchingIOs:
         )
         # For read index, the +T is because there are -1 for seqlen_q when model uses a sliding window
 
-    def transfer_inputs(
+    def _transfer_inputs(
         self,
         other: "ContinuousBatchingIOs",
         stream: torch.cuda.Stream | None = None,
@@ -199,7 +199,7 @@ class ContinuousBatchingIOs:
 
     @traced
     @torch.no_grad()
-    def reset_static_tensors(self, full_reset: bool = False) -> None:
+    def _reset_static_tensors(self, full_reset: bool = False) -> None:
         """Reset static tensors for the next batch. For efficiency, this only resets the portions of tensors that were
         actually used in the previous batch, using the attributes actual_query_length, actual_key_length, and
         actual_batch_size. If a (full_reset) is requested, the entire tensor storage is reset.
@@ -226,6 +226,17 @@ class ContinuousBatchingIOs:
         self.write_index_storage[:, :q_len].fill_(-2)  # -1 is used to let the cache where new states go
         self.read_index_storage[:, : q_len + k_len].fill_(-2)  # same
 
+    # These getter function help create a common interface for the sync and async IOs
+    def get_cumulative_seqlens(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Get the cumulative sequence lengths for the current batch."""
+        return self.cumulative_seqlens_q, self.cumulative_seqlens_k
+
+    def get_new_tokens(self) -> list[int]:
+        return self.output_ids[: len(self.requests_in_batch)].tolist()
+
+    def get_actual_lengths(self) -> tuple[int, int, int, list[int], list[int]]:
+        return self.actual_query_length, self.actual_key_length, self.actual_batch_size, self.actual_read_sizes, self.actual_write_sizes
+
     @traced
     def prepare_batch_tensors(self, requests_in_batch: list[FutureRequestState]) -> None:
         """Prepare tensors and metadata for the next model forward pass, using the given requests as data. This method:
@@ -244,7 +255,7 @@ class ContinuousBatchingIOs:
             raise ValueError("No requests in batch")
 
         # Reset the static tensors used for storage
-        self.reset_static_tensors()  # FIXME: why does this make the generation faster?
+        self._reset_static_tensors()  # FIXME: why does this make the generation faster?
         # Reset accumulators
         self.requests_in_batch = []
         self.actual_query_length = 0

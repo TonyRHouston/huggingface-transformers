@@ -239,8 +239,7 @@ class ContinuousBatchProcessor:
         # Record the memory metrics of the KV cache
         self.metrics.record_kv_cache_memory_metrics(self.cache)
         if logger.isEnabledFor(logging.DEBUG):
-            cumulative_seqlens_q = self.inputs_and_outputs.cumulative_seqlens_q
-            cumulative_seqlens_k = self.inputs_and_outputs.cumulative_seqlens_k
+            cumulative_seqlens_q, cumulative_seqlens_k = self.inputs_and_outputs.get_cumulative_seqlens()
             ck = max(cumulative_seqlens_k[layer_type][-1] for layer_type in cumulative_seqlens_k)
             logger.debug(
                 f"Scheduled: {len(requests_in_batch)}, Waiting: {len(self.scheduler.waiting_requests)}, "
@@ -259,7 +258,7 @@ class ContinuousBatchProcessor:
     def update_batch(self) -> None:
         """Update request states based on generated tokens."""
         requests_in_batch = self.inputs_and_outputs.requests_in_batch
-        new_tokens = self.inputs_and_outputs.output_ids[: len(requests_in_batch)].tolist()
+        new_tokens = self.inputs_and_outputs.get_new_tokens()
         current_logits_index = 0
         for future_state in requests_in_batch:
             state = future_state.state
@@ -364,9 +363,9 @@ class ContinuousBatchProcessor:
 
         # If inputs are static sized, we find the padded sizes of the queries and keys/values
         if self._pad_inputs:
-            actual_query_length = self.inputs_and_outputs.actual_query_length
+            actual_query_length, _, _, actual_read_sizes, _ = self.inputs_and_outputs.get_actual_lengths()
             padded_q = pad_by_intervals(actual_query_length, self.max_batch_tokens, self.q_padding_intervals)
-            max_read_index_size = max(self.inputs_and_outputs.actual_read_sizes)
+            max_read_index_size = max(actual_read_sizes)
             # The space planned for query tokens will be added later, so we remove it from the space planned for KV
             padded_read_index_size = pad_by_intervals(
                 max_read_index_size, self.cache.num_pages, self.kv_padding_intervals
