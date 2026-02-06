@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from contextlib import nullcontext
 from dataclasses import dataclass
 from functools import partial
 from itertools import count
@@ -172,6 +173,29 @@ class ContinuousBatchingIOs:
             (num_groups, num_pages + max_batch_tokens), dtype=torch.int32, device=self.device, pin_memory=pin_memory
         )
         # For read index, the +T is because there are -1 for seqlen_q when model uses a sliding window
+
+    def transfer_inputs(
+        self,
+        other: "ContinuousBatchingIOs",
+        stream: torch.cuda.Stream | None = None,
+        non_blocking: bool = False
+    ) -> None:
+        # Transfer accumulators
+        other.actual_query_length = self.actual_query_length
+        other.actual_key_length = self.actual_key_length
+        other.actual_batch_size = self.actual_batch_size
+        other.actual_read_sizes = self.actual_read_sizes[:]
+        other.actual_write_sizes = self.actual_write_sizes[:]
+        # Transfer scalar attributes
+        other.max_seqlen_q = self.max_seqlen_q
+        other.max_seqlen_k = dict(self.max_seqlen_k.items())
+        # Transfer static tensors
+        context = torch.cuda.stream(stream) if stream is not None else nullcontext()
+        with context:
+            other._bulk_input_tensor.copy_(self._bulk_input_tensor, non_blocking=non_blocking)
+            other.write_index_storage.copy_(self.write_index_storage, non_blocking=non_blocking)
+            other.read_index_storage.copy_(self.read_index_storage, non_blocking=non_blocking)
+
 
     @traced
     @torch.no_grad()
