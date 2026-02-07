@@ -1454,6 +1454,8 @@ class GenerationTesterMixin:
                     "use_cache": True,
                 }
 
+                # Reset seed before each generate to ensure both calls start with identical random state
+                set_seed(42)
                 static_cache_generation = model.generate(
                     **generation_kwargs, **inputs_dict, cache_implementation="static"
                 )
@@ -1467,6 +1469,8 @@ class GenerationTesterMixin:
                 )
 
                 # Check 2: The outputs must be similar to the case with dynamic cache
+                # Reset seed again to ensure dynamic cache generation starts with same random state
+                set_seed(42)
                 dynamic_cache_generation = model.generate(**generation_kwargs, **inputs_dict)
                 if is_moe_model(config):
                     atol = rtol = 1e-3
