@@ -753,7 +753,7 @@ class AllReduce(TensorParallelLayer):
         return all_reduce_forward(outputs, device_mesh)
 
 
-class ReplicatedInTP(TensorParallelLayer):
+class ReplicatedWithGradAllReduce(TensorParallelLayer):
     """
     Replicated parameter with gradient all-reduce.
 
@@ -1165,7 +1165,7 @@ class ParallelInterface(GeneralInterface):
             "ep_router": RouterParallel(),
             "moe_tp_experts": MoeTensorParalellExperts(),
             "all_reduce": AllReduce(),
-            "replicated_in_tp": ReplicatedInTP(),
+            "replicated_with_grad_allreduce": ReplicatedWithGradAllReduce(),
         }
         if is_torch_available() and _torch_distributed_available
         else {}
@@ -1183,7 +1183,7 @@ class ParallelInterface(GeneralInterface):
         "packed_rowwise": -1,
         "embedding_rowwise": 0,
         "sequence_parallel": None,
-        "replicated_in_tp": None,
+        "replicated_with_grad_allreduce": None,
     }
 
     # Bias sharding: colwise shards bias, rowwise doesn't (bias is replicated and all-reduced)
@@ -1196,7 +1196,7 @@ class ParallelInterface(GeneralInterface):
         "packed_rowwise": None,
         "embedding_rowwise": None,
         "sequence_parallel": None,
-        "replicated_in_tp": None,
+        "replicated_with_grad_allreduce": None,
     }
 
 
