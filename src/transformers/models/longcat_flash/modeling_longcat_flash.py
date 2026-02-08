@@ -213,7 +213,7 @@ class LongcatFlashExperts(nn.Module):
                 # Zero expert: identity function. in TP case, we need to scale down the output by 1/tp_world_size otherwise it will get summed twice during all-reduce
                 current_hidden_states = current_state
                 if getattr(self, "_hf_tp_plan", None) is not None and torch.distributed.is_initialized():
-                     current_hidden_states /= torch.distributed.get_world_size()
+                    current_hidden_states /= torch.distributed.get_world_size()
             else:
                 gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
                 current_hidden_states = self.act_fn(gate) * up
@@ -425,8 +425,6 @@ class LongcatFlashMLA(nn.Module):
         # heads is only a partial sum. all_reduce_backward fixes this in backward.
         device_mesh = getattr(self.kv_b_proj, "_hf_device_mesh", None)
         if device_mesh is not None:
-            #TODO(3outeille): this is just temporary fix. We need to figure out a better way to handle this.
-            # probably having a specific TP class for this.
             from ...integrations.tensor_parallel import all_reduce_backward
 
             k_rot = all_reduce_backward(k_rot, device_mesh)

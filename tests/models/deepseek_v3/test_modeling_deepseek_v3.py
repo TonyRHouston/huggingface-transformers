@@ -34,6 +34,7 @@ from ...test_modeling_common import ModelTesterMixin, ids_tensor
 from ...test_pipeline_mixin import PipelineTesterMixin
 from ...test_tensor_parallel_mixin import TensorParallelTesterMixin
 
+
 if is_torch_available():
     import torch
 
@@ -213,7 +214,9 @@ class DeepseekV3ModelTester:
 
 
 @require_torch
-class DeepseekV3ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase, TensorParallelTesterMixin):
+class DeepseekV3ModelTest(
+    ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase, TensorParallelTesterMixin
+):
     all_model_classes = (
         (
             DeepseekV3Model,

@@ -174,8 +174,7 @@ def _test_tp_forward_impl(_rank, model_path, model_class, atol, rtol):
 
     diff = (logits - logits_tp).abs()
     assert torch.allclose(logits, logits_tp, atol=atol, rtol=rtol), (
-        f"TP and non-TP model outputs differ. "
-        f"Max diff: {diff.max().item()} | Min diff: {diff.min().item()}"
+        f"TP and non-TP model outputs differ. Max diff: {diff.max().item()} | Min diff: {diff.min().item()}"
     )
 
     dist.barrier()
@@ -230,8 +229,7 @@ def _test_tp_backward_impl(rank, model_path, model_class, atol, rtol):
                         break
 
             assert torch.allclose(grad.cpu(), grad_tp.cpu(), atol=atol, rtol=rtol), (
-                f"Gradients differ for parameter {name}. "
-                f"Max diff: {(grad.cpu() - grad_tp.cpu()).abs().max().item()}"
+                f"Gradients differ for parameter {name}. Max diff: {(grad.cpu() - grad_tp.cpu()).abs().max().item()}"
             )
 
     dist.barrier()
@@ -390,8 +388,7 @@ class TensorParallelTesterMixin(ABC):
 
         if backend_device_count(torch_device) < self.tensor_parallel_size:
             self.skipTest(
-                f"Need at least {self.tensor_parallel_size} devices, "
-                f"have {backend_device_count(torch_device)}"
+                f"Need at least {self.tensor_parallel_size} devices, have {backend_device_count(torch_device)}"
             )
 
     # ============================================================
@@ -416,9 +413,7 @@ class TensorParallelTesterMixin(ABC):
             model = model_class(config)
             model.save_pretrained(tmp_dir)
 
-            _init_distributed(tp=self.tensor_parallel_size)(_test_tp_forward_impl)(
-                tmp_dir, model_class, atol, rtol
-            )
+            _init_distributed(tp=self.tensor_parallel_size)(_test_tp_forward_impl)(tmp_dir, model_class, atol, rtol)
 
     def test_tp_backward_direct(self):
         """Test TP backward pass with direct load path (no conversion mapping).
@@ -439,9 +434,7 @@ class TensorParallelTesterMixin(ABC):
             model = model_class(config)
             model.save_pretrained(tmp_dir)
 
-            _init_distributed(tp=self.tensor_parallel_size)(_test_tp_backward_impl)(
-                tmp_dir, model_class, atol, rtol
-            )
+            _init_distributed(tp=self.tensor_parallel_size)(_test_tp_backward_impl)(tmp_dir, model_class, atol, rtol)
 
     def test_tp_generation_direct(self):
         """Test TP generation with direct load path (no conversion mapping).

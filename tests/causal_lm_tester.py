@@ -19,7 +19,6 @@ import pytest
 from parameterized import parameterized
 
 from transformers import AutoModelForCausalLM, PreTrainedConfig, set_seed
-from .test_tensor_parallel_mixin import TensorParallelTesterMixin
 from transformers.models.auto.auto_factory import getattribute_from_module
 from transformers.testing_utils import (
     _COMMON_MODEL_NAMES_MAP,
@@ -39,6 +38,7 @@ from .test_modeling_common import (
     torch_device,
 )
 from .test_pipeline_mixin import PipelineTesterMixin
+from .test_tensor_parallel_mixin import TensorParallelTesterMixin
 from .test_training_mixin import TrainingTesterMixin
 
 

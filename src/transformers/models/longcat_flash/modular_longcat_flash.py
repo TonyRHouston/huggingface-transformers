@@ -134,7 +134,7 @@ class LongcatFlashExperts(nn.Module):
                 # Zero expert: identity function. in TP case, we need to scale down the output by 1/tp_world_size otherwise it will get summed twice during all-reduce
                 current_hidden_states = current_state
                 if getattr(self, "_hf_tp_plan", None) is not None and torch.distributed.is_initialized():
-                     current_hidden_states /= torch.distributed.get_world_size()
+                    current_hidden_states /= torch.distributed.get_world_size()
             else:
                 gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
                 current_hidden_states = self.act_fn(gate) * up
