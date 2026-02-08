@@ -703,7 +703,7 @@ class GenerationTesterMixin:
             logits_processor_kwargs = self._get_logits_processor_kwargs(config=model.config)
 
             # Reset seed before each generate call to ensure identical RNG state
-            set_seed(42)
+            set_seed(42, deterministic=True)
             output_greedy = model.generate(**generation_kwargs, **inputs_dict, **logits_processor_kwargs)
 
             # test with the same assistant model or randomly init one
@@ -719,7 +719,7 @@ class GenerationTesterMixin:
             generation_kwargs.update({"assistant_model": assistant_model})
 
             # Reset seed again before assisted generate to match greedy RNG state
-            set_seed(42)
+            set_seed(42, deterministic=True)
             output_assisted = model.generate(**generation_kwargs, **inputs_dict, **logits_processor_kwargs)
 
             # `gpt_oss` seems to have larger differences on CPU every other generated tokens, sth. like
@@ -1297,10 +1297,14 @@ class GenerationTesterMixin:
             }
 
             # Traditional way of generating text, with `return_dict_in_generate` to return the past key values
+            # Reset seed to ensure deterministic generation
+            set_seed(42, deterministic=True)
             outputs = model.generate(**inputs, **generate_kwargs, max_new_tokens=4)
 
             # Let's generate again, but passing the past key values in between (3 + 1 = 4 tokens). Note that the
             # inputs may need to be tweaked across `generate` calls (like the attention mask).
+            # Reset seed again to match the RNG state from the first generate call
+            set_seed(42, deterministic=True)
             outputs_cached = model.generate(**inputs, **generate_kwargs, max_new_tokens=3)
 
             # Continue from the tokens generated above, preparing the inputs accordingly
