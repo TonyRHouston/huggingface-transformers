@@ -132,7 +132,7 @@ class ContinuousBatchingIOs:
         # Small inputs are allocated as slices in a larget tensor to reduce D2H times (32 * 4b = 128 bytes aligned)
         bulk_size = aligned_divide(max_batch_tokens + 1, 1, 32)
         self._bulk_input_tensor = torch.empty(
-            (6, bulk_size), dtype=torch.int32, device=self.device, pin_memory=pin_memory
+            (7, bulk_size), dtype=torch.int32, device=self.device, pin_memory=pin_memory
         )
 
         self.input_ids = self._bulk_input_tensor[0, :max_batch_tokens]
@@ -141,6 +141,7 @@ class ContinuousBatchingIOs:
         self.logits_indices = self._bulk_input_tensor[3, :max_batch_tokens]
         full_attention_cumulative_seqlens_k = self._bulk_input_tensor[4, :max_batch_tokens + 1]
         sliding_attention_cumulative_seqlens_k = self._bulk_input_tensor[5, :max_batch_tokens + 1]
+        self.carry_over_ids = self._bulk_input_tensor[6, :max_batch_tokens]  # only used for async API
 
         # For sequence length of KV, the entries in the dict depend on the model
         self.cumulative_seqlens_k: dict[str, torch.Tensor] = {}
@@ -151,6 +152,7 @@ class ContinuousBatchingIOs:
 
         # Output tensor and scalars
         self.output_ids = torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
+        self.total_seqlen_q = 0
         self.max_seqlen_q = 0
         self.max_seqlen_k = dict.fromkeys(self.cumulative_seqlens_k.keys(), 0)
 
@@ -189,6 +191,7 @@ class ContinuousBatchingIOs:
         other.actual_read_sizes = self.actual_read_sizes[:]
         other.actual_write_sizes = self.actual_write_sizes[:]
         # Transfer scalar attributes
+        other.total_seqlen_q = self.total_seqlen_q
         other.max_seqlen_q = self.max_seqlen_q
         other.max_seqlen_k = dict(self.max_seqlen_k.items())
         # Transfer static tensors
@@ -233,11 +236,20 @@ class ContinuousBatchingIOs:
         """Get the cumulative sequence lengths for the current batch."""
         return self.cumulative_seqlens_q, self.cumulative_seqlens_k
 
-    def get_new_tokens(self) -> list[int]:
-        return self.output_ids[: len(self.requests_in_batch)].tolist()
-
     def get_actual_lengths(self) -> tuple[int, int, int, list[int], list[int]]:
         return self.actual_query_length, self.actual_key_length, self.actual_batch_size, self.actual_read_sizes, self.actual_write_sizes
+
+    @property
+    def compute_stream(self) -> torch.cuda.Stream:
+        return torch.cuda.current_stream()
+
+    def retrieve_device_outputs(self) -> None:
+        pass  # serves no purpose for the sync API
+
+    def prepare_batch_update(self) -> tuple[list[FutureRequestState], list[int]]:
+        requests_in_batch = self.requests_in_batch
+        new_tokens = self.output_ids[: len(self.requests_in_batch)].tolist()
+        return requests_in_batch, new_tokens
 
     @traced
     def prepare_batch_tensors(self, requests_in_batch: list[FutureRequestState]) -> None:
@@ -411,3 +423,97 @@ class ContinuousBatchingIOs:
         if self.attention_mask is None:
             kwargs.attention_mask = None
         return kwargs.asdict()  # TODO: this is imperfect, check if there is no better way to juggle dict / dataclass
+
+
+class HostDeviceIOPair:
+
+    def __init__(
+        self, cache: PagedAttentionCache, config: PretrainedConfig, device: torch.device, model_dtype: torch.dtype
+    ) -> None:
+        self.host_io = ContinuousBatchingIOs(cache, config, torch.device("cpu"), model_dtype)
+        self.device_io = ContinuousBatchingIOs(cache, config, device, model_dtype)
+        self.h2d_over = torch.cuda.Event()
+        self.compute_over = torch.cuda.Event()
+        self.d2h_over = torch.cuda.Event()
+
+    def transfer_inputs_h2d(self, stream: torch.cuda.Stream) -> None:
+        self.host_io._transfer_inputs(self.device_io, stream=stream, non_blocking=True)
+        self.h2d_over.record(stream=stream)
+
+    def transfer_outputs_d2h(self, stream: torch.cuda.Stream) -> None:
+        self.device_io._transfer_inputs(self.host_io, stream=stream, non_blocking=True)
+        self.d2h_over.record(stream=stream)
+
+class ContinuousBatchingAsyncIOs:
+    """To be compatible with the synchronous API, this class implements the following:
+
+    GETTERS:
+        - get_cumulative_seqlens
+        - get_actual_lengths
+
+    METHODS:
+        - prepare_batch_tensors
+        - get_model_kwargs
+        - retrieve_device_outputs
+        - prepare_batch_update
+
+    PROPERTIES:
+        - output_ids
+        - graphs
+    """
+
+    def __init__(
+        self, cache: PagedAttentionCache, config: PretrainedConfig, device: torch.device, model_dtype: torch.dtype
+    ) -> None:
+        # IO pairs used to avoid race conditions
+        self.current_pair = 0
+        self.io_pairs = [HostDeviceIOPair(cache, config, device, model_dtype) for _ in range(2)]
+        # CUDA streams
+        self.h2d_stream = torch.cuda.Stream(device=device)
+        self.d2h_stream = torch.cuda.Stream(device=device)
+        self.compute_stream = torch.cuda.Stream(device=device)
+
+    # These methods are simple wrapper dispatching to the current IO pair
+    def get_cumulative_seqlens(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        return self.io_pairs[self.current_pair].host_io.get_cumulative_seqlens()
+
+    def get_actual_lengths(self) -> tuple[int, int, int, list[int], list[int]]:
+        return self.io_pairs[self.current_pair].host_io.get_actual_lengths()
+
+    # The prepare_batch_tensor method also has to prepare the carry over ids
+    def prepare_batch_tensors(self, requests_in_batch: list[FutureRequestState]) -> None:
+        io_pair = self.io_pairs[self.current_pair]
+        io_pair.host_io.prepare_batch_tensors(requests_in_batch)
+        io_pair.host_io.carry_over_ids.copy_(self.infer_carry_over_ids())
+
+    # The get_model_kwargs method is where the H2D transfer happens
+    def get_model_kwargs(self, padded_q_size: int = 0, padded_kv_cache_size: int = 0) -> dict[str, Any]:
+        io_pair = self.io_pairs[self.current_pair]
+        io_pair.transfer_inputs_h2d(self.h2d_stream)
+        self.h2d_stream.record_event(io_pair.h2d_over)
+        self.compute_stream.wait_event(io_pair.h2d_over)
+        return io_pair.device_io.get_model_kwargs(padded_q_size, padded_kv_cache_size)
+
+    # This is called during compute, so we always pick the device IO in the IO pair
+    @property
+    def output_ids(self) -> torch.Tensor:
+        # The output ids are used to copy_ the infered tokens: they need to be on the device
+        return self.io_pairs[self.current_pair].device_io.output_ids
+
+    @property
+    def graphs(self) -> dict[tuple[int, int], torch.cuda.CUDAGraph]:
+        return self.io_pairs[self.current_pair].device_io.graphs
+
+    # The retrieve_device_outputs method is where the D2H transfer happens AND where we switch IO pair
+    def retrieve_device_outputs(self) -> None:
+        io_pair = self.io_pairs[self.current_pair]
+        self.compute_stream.record_event(io_pair.compute_over)
+        io_pair.transfer_outputs_d2h(self.d2h_stream)
+        self.d2h_stream.record_event(io_pair.d2h_over)
+        self.current_pair = 1 - self.current_pair
+
+    # This method is called after the switch and not during the first batch
+    def prepare_batch_update(self) -> tuple[list[FutureRequestState], list[int]]:
+        io_pair = self.io_pairs[self.current_pair]
+        io_pair.d2h_over.synchronize()
+        return io_pair.host_io.prepare_batch_update()

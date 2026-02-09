@@ -30,7 +30,7 @@ from ...generation.logits_process import LogitsProcessorList
 from ...utils.logging import logging
 from ...utils.metrics import ContinuousBatchProcessorMetrics, attach_tracer, traced
 from .cache import PagedAttentionCache
-from .input_ouputs import ContinuousBatchingIOs
+from .input_ouputs import ContinuousBatchingAsyncIOs, ContinuousBatchingIOs
 from .requests import GenerationOutput, RequestState, RequestStatus, logger
 from .scheduler import SCHEDULER_MAPPING, FIFOScheduler, Scheduler
 from .utils import attn_mask_is_needed, pad_by_intervals
@@ -137,7 +137,11 @@ class ContinuousBatchProcessor:
         self.metrics = ContinuousBatchProcessorMetrics(cache.max_batch_tokens)
 
         # Setup inputs and outputs
-        self.inputs_and_outputs = ContinuousBatchingIOs(cache, config, model_device, model_dtype)
+        self.use_async = True # TODO: BUG: this needs a knob
+        if self.use_async:
+            self.inputs_and_outputs = ContinuousBatchingAsyncIOs(cache, config, model_device, model_dtype)
+        else:
+            self.inputs_and_outputs = ContinuousBatchingIOs(cache, config, model_device, model_dtype)
 
     def __repr__(self) -> str:
         return (
@@ -257,8 +261,7 @@ class ContinuousBatchProcessor:
     @traced
     def update_batch(self) -> None:
         """Update request states based on generated tokens."""
-        requests_in_batch = self.inputs_and_outputs.requests_in_batch
-        new_tokens = self.inputs_and_outputs.get_new_tokens()
+        requests_in_batch, new_tokens = self.inputs_and_outputs.prepare_batch_update()
         current_logits_index = 0
         for future_state in requests_in_batch:
             state = future_state.state
@@ -318,10 +321,10 @@ class ContinuousBatchProcessor:
     @traced
     def handle_batch_error(self, error):
         """Handle errors during batch processing."""
-        failed_reqs = [future_state.state for future_state in self.inputs_and_outputs.requests_in_batch]
-        for req in failed_reqs:
-            self._handle_request_error(error, req)
-            self.scheduler.finish_request(req.request_id)
+        failed_future_states = self.inputs_and_outputs.prepare_batch_update()[0]
+        for future_state in failed_future_states:
+            self._handle_request_error(error, future_state.state)
+            self.scheduler.finish_request(future_state.state.request_id)
 
     @traced
     def fail_all_requests(self, error: Exception) -> None:
@@ -374,35 +377,47 @@ class ContinuousBatchProcessor:
             padded_q, padded_read_index_size = 0, 0
         # Retrieve the model kwargs with or without padding
         batch_data = self.inputs_and_outputs.get_model_kwargs(padded_q, padded_read_index_size)
+        compute_stream = self.inputs_and_outputs.compute_stream
+
+        # Print input ids # TODO: BUG: remove this
+        print(batch_data["input_ids"].tolist())
 
         # If we are not using cuda graphs, we perform the generation step and return
         if not self.use_cuda_graph:
-            self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
-            return None
+            self._forward_process_and_sample(model, batch_data, logit_processor, do_sample, None)
 
-        # If we have a graph that fits, we replay it
-        graph = self.inputs_and_outputs.graphs.get((padded_q, padded_read_index_size))
-        if graph is not None:
-            graph.replay()
-            return None
+        # Otherwise, we use create or replay the graph
+        else:
+            graph = self.inputs_and_outputs.graphs.get((padded_q, padded_read_index_size))
+            # Case: the graph already exists, so we replay it
+            if graph is not None:
+                graph.replay()
+            # Otherwise, the graph does not exist, so we create it
+            else:
+                logger.info(f"Creating graph for {(padded_q, padded_read_index_size) = }")
+                compute_stream.wait_stream(torch.cuda.current_stream())
+                # Warmup
+                with torch.cuda.stream(compute_stream):
+                    self._forward_process_and_sample(model, batch_data, logit_processor, do_sample, None)
+                torch.cuda.current_stream().wait_stream(compute_stream)
+                # Catpure
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph, stream=compute_stream):
+                    self._forward_process_and_sample(model, batch_data, logit_processor, do_sample, None)
+                # Store
+                self.inputs_and_outputs.graphs[(padded_q, padded_read_index_size)] = graph
 
-        # Otherwise, we need to create it
-        logger.info(f"Creating graph for {(padded_q, padded_read_index_size) = }")
-        stream = torch.cuda.Stream(device=model.device)
-        stream.wait_stream(torch.cuda.current_stream())
-        # Warmup
-        with torch.cuda.stream(stream):
-            self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
-        torch.cuda.current_stream().wait_stream(stream)
-        # Catpure
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, stream=stream):
-            self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
-        self.inputs_and_outputs.graphs[(padded_q, padded_read_index_size)] = graph
+        # In any case, we transfer the outputs to the host
+        self.inputs_and_outputs.retrieve_device_outputs()
 
     @traced
     def _forward_process_and_sample(
-        self, model: nn.Module, batch_data: dict, logit_processor: LogitsProcessorList, do_sample: bool
+        self,
+        model: nn.Module,
+        batch_data: dict,
+        logit_processor: LogitsProcessorList,
+        do_sample: bool,
+        transfer_ids: torch.Tensor | None,
     ) -> None:
         """This function performs the forward pass, logits processing, and sampling; which are broken down into smaller
         function to be easier to trace with OpenTelemetry."""
@@ -410,6 +425,8 @@ class ContinuousBatchProcessor:
         # if self.log_prob_generation:    batch_processor.output_probs.copy_(logits)  # TODO
         probs = self._process_logit(batch_data, logits, logit_processor)
         self._sample(probs, batch_data, do_sample)
+        if transfer_ids is not None:
+            pass # TODO: BUG: implement this
 
     @traced(span_name="model_forward")
     def _model_forward(self, model: nn.Module, batch_data: dict) -> torch.Tensor:
@@ -792,6 +809,14 @@ class ContinuousBatchingManager:
             self.batch_processor = batch_processor
             self.current_batch = 0
             logger.debug(f"batch_processor created in {perf_counter() - t1} seconds")
+
+            # If using the async API, we bootstrap the first batch w/out update
+            if self.batch_processor.use_async:
+                if not batch_processor.prepare_next_batch():
+                    raise RuntimeError("Failed to bootstrap the first batch.")
+                self._generation_step()
+                self.current_batch += 1
+
             while (not self.stop_event.is_set()) or batch_processor.has_pending_requests():
                 self._inner_generation_loop(batch_processor)
                 self.current_batch += 1
