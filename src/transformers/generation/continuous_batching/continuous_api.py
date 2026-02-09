@@ -205,6 +205,7 @@ class ContinuousBatchProcessor:
         # Create a copy of the offloaded request keeping the generated tokens as addition to the initial prompt
         new_state = state.create_equivalent_initial_request()
         # Actual offloading of the request
+        state._status = RequestStatus.FINISHED  # in async mode, it ensure the request is not updated in the other batch
         self.scheduler.finish_request(request_id, evict_from_cache=True)
         self.scheduler.add_waiting_request(new_state)
         # This flag blocks any new requests from being scheduled until one request is finished. This ensures that we
@@ -393,7 +394,8 @@ class ContinuousBatchProcessor:
             graph = self.inputs_and_outputs.graphs.get((padded_q, padded_read_index_size))
             # Case: the graph already exists, so we replay it
             if graph is not None:
-                graph.replay()
+                with torch.cuda.stream(compute_stream):
+                    graph.replay()
             # Otherwise, the graph does not exist, so we create it
             else:
                 logger.info(f"Creating graph for {(padded_q, padded_read_index_size) = }")
@@ -402,7 +404,7 @@ class ContinuousBatchProcessor:
                 with torch.cuda.stream(compute_stream):
                     self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
                 torch.cuda.current_stream().wait_stream(compute_stream)
-                # Catpure
+                # Capture
                 graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(graph, stream=compute_stream):
                     self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)

@@ -20,7 +20,7 @@ from ...generation.configuration_utils import GenerationConfig
 from ...utils.generic import is_flash_attention_requested
 from ...utils.metrics import attach_tracer, traced
 from .cache_manager import BlockManager, CacheAllocator, FullAttentionCacheAllocator, SlidingAttentionCacheAllocator
-from .requests import RequestState, get_device_and_memory_breakdown, logger
+from .requests import RequestState, RequestStatus, get_device_and_memory_breakdown, logger
 
 
 def group_layers_by_attn_type(config: PreTrainedConfig) -> tuple[list[list[int]], list[str]]:
@@ -410,7 +410,7 @@ class PagedAttentionCache:
         in the forward pass. A complete block is a block where the KV cache has been fully computed: if the block has
         enough space to hold the cache for N tokens, the block is marked as complete when the cache data is present for
         the N tokens. If block sharing is off, this is a no-op."""
-        if num_complete_blocks == 0:
+        if num_complete_blocks == 0 or state.status == RequestStatus.FINISHED:
             return None
         for cm in self.group_cache_managers:
             if cm.uses_block_sharing:
