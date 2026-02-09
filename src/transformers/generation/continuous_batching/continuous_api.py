@@ -92,6 +92,7 @@ class ContinuousBatchProcessor:
         use_cuda_graph: bool,
         q_padding_intervals: int,
         kv_padding_intervals: int,
+        use_async: bool,
     ) -> None:
         """Initialize the continuous batch processor.
 
@@ -137,7 +138,7 @@ class ContinuousBatchProcessor:
         self.metrics = ContinuousBatchProcessorMetrics(cache.max_batch_tokens)
 
         # Setup inputs and outputs
-        self.use_async = True # TODO: BUG: this needs a knob
+        self.use_async = use_async
         if self.use_async:
             self.inputs_and_outputs = ContinuousBatchingAsyncIOs(cache, config, model_device, model_dtype)
         else:
@@ -261,19 +262,24 @@ class ContinuousBatchProcessor:
     @traced
     def update_batch(self) -> None:
         """Update request states based on generated tokens."""
+        self.cache.finalize_block_uninitialization()
         requests_in_batch, new_tokens = self.inputs_and_outputs.prepare_batch_update()
         current_logits_index = 0
         for future_state in requests_in_batch:
             state = future_state.state
+            # Early return if the request is finished
+            if state.status == RequestStatus.FINISHED:
+                if self.use_async:
+                    continue
+                raise RuntimeError(f"Tried to update FINISHED request {state.request_id} in sync mode.")
             # If the request has a new token, it means prefill has already ended or just finished
             if future_state.has_new_token:
                 # If there is just one temporary token, it means prefill just ended
-                if state.generated_len() == 1:
+                if state.generated_len() == 0:
                     self.metrics.record_ttft_metric(state.created_time, state.request_id)
                     state.status = RequestStatus.DECODING
 
                 token = new_tokens[current_logits_index]
-                state.tokens_to_process = [token]
                 current_logits_index += 1
 
                 # Update the request and stop if it is complete
@@ -286,11 +292,8 @@ class ContinuousBatchProcessor:
                     self.scheduler.block_new_requests = False
                 self._maybe_send_output(state)
             #  Otherwise, the request is still prefilling, but the prefill has been split
-            elif state.status == RequestStatus.PREFILLING_SPLIT:
+            elif state.status == RequestStatus.PREFILLING:
                 self.cache.mark_shareable_blocks_as_complete(state, future_state.complete_blocks)
-                state.status = RequestStatus.SPLIT_PENDING_REMAINDER
-            else:
-                raise ValueError(f"Request {state.request_id} is in an unexpected state: {state.status}")
 
         # If some requests need to be forked, we do it now
         copy_source, copy_destination = [], []
@@ -676,7 +679,6 @@ class ContinuousBatchingManager:
             initial_tokens=list(input_ids),
             num_children=self.num_return_sequences - 1,
             record_timestamps=record_timestamps,
-            tokens_to_process=list(input_ids),
             max_new_tokens=max_new_tokens,
             eos_token_id=self.generation_config.eos_token_id,
             streaming=streaming,
@@ -764,6 +766,7 @@ class ContinuousBatchingManager:
     def _run_generation_loop(self) -> None:
         """Main processing loop running in the background thread."""
         batch_processor: ContinuousBatchProcessor | None = None
+        self.use_async = True # TODO: BUG: this needs a knob
         try:
             t0 = perf_counter()
             paged_attention_cache = PagedAttentionCache(
@@ -773,6 +776,7 @@ class ContinuousBatchingManager:
                 self.model.dtype,
                 tp_size=getattr(self.model, "_tp_size", None),  # Use model's actual TP setting
                 allow_block_sharing=self._allow_block_sharing,
+                use_async=self.use_async,
             )
             self._use_prefix_sharing = paged_attention_cache.use_prefix_sharing  # update the approximation
             logger.debug(f"PagedAttentionCache created in {perf_counter() - t0} seconds")
@@ -802,6 +806,7 @@ class ContinuousBatchingManager:
                 use_cuda_graph=self.use_cuda_graph,
                 q_padding_intervals=self.q_padding_intervals,
                 kv_padding_intervals=self.kv_padding_intervals,
+                use_async=self.use_async,
             )
             self.batch_processor = batch_processor
             self.current_batch = 0

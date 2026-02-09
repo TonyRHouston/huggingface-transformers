@@ -152,7 +152,9 @@ class ContinuousBatchingIOs:
             self.cumulative_seqlens_k["sliding_attention"] = sliding_attention_cumulative_seqlens_k
 
         # Output tensor and scalars
-        self.output_ids = torch.empty((max_batch_tokens,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
+        self.output_ids = torch.empty((max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
+        # Last output token is never changed and set to 0 for async carry on purpose
+        self.output_ids[-1] = 0
         self.total_seqlen_q = 0
         self.max_seqlen_q = 0
         self.max_seqlen_k = dict.fromkeys(self.cumulative_seqlens_k.keys(), 0)
@@ -220,7 +222,8 @@ class ContinuousBatchingIOs:
 
         # Reset the logits indices and output ids (TODO: logits indices reset might be redundant)
         self.logits_indices[:q_len].fill_(-1)
-        self.output_ids[:q_len].fill_(-1)
+        self.output_ids[:q_len].fill_(-1) # TODO: BUG: this should be useless
+        self.output_ids[-1] = 0  # TODO: BUG: this should be useless
 
         # Reset the attributes that are either tensors or dict of tensors
         for layer_type in self.cumulative_seqlens_k:
@@ -327,7 +330,7 @@ class ContinuousBatchingIOs:
             # If the request has no remaining prefill tokens, it means the next token prediction is relevant
             if future_state.has_new_token:
                 logits_indices.append(cumulative_seqlens_q[-1] - 1)
-                state.generated_tokens.append(TMP_TOKEN_ID)
+                state.tokens_to_process = [TMP_TOKEN_ID]
                 self.req_id_to_new_token_position[state.request_id] = logits_indices[-1]
 
             self.requests_in_batch.append(future_state)
@@ -447,7 +450,8 @@ class HostDeviceIOPair:
         self.h2d_over.record(stream=stream)
 
     def transfer_outputs_d2h(self, stream: torch.cuda.Stream) -> None:
-        self.device_io._transfer_inputs(self.host_io, stream=stream, non_blocking=True)
+        with torch.cuda.stream(stream):
+            self.host_io.output_ids.copy_(self.device_io.output_ids, non_blocking=True)
         self.d2h_over.record(stream=stream)
 
 class ContinuousBatchingAsyncIOs:
@@ -516,8 +520,8 @@ class ContinuousBatchingAsyncIOs:
         prev_output_ids = self.io_pairs[1 - self.current_pair].device_io.output_ids
         carry_over_ids = self.io_pairs[self.current_pair].device_io.carry_over_ids
         carried_tokens = prev_output_ids[carry_over_ids]
-        mask = (carried_tokens != -1)
-        input_ids[0, mask] = carried_tokens[mask]
+        carried_tokens = carried_tokens[:input_ids.size(1)]
+        input_ids[0] += carried_tokens
 
     # This is called during compute, so we always pick the device IO in the IO pair
     @property

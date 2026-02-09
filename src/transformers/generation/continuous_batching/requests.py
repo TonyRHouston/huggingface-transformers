@@ -13,7 +13,7 @@
 # limitations under the License.
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import IntEnum
 
 import torch
 
@@ -72,16 +72,14 @@ def get_device_and_memory_breakdown() -> tuple[torch.device, int, int, int]:
     return device, total_memory, reserved_memory, allocated_memory
 
 
-class RequestStatus(Enum):
+class RequestStatus(IntEnum):
     """Status of a generation request through its lifecycle."""
 
-    PENDING = "pending"
-    PREFILLING = "prefilling"
-    PREFILLING_SPLIT = "prefilling_split"
-    SPLIT_PENDING_REMAINDER = "split_pending_remainder"
-    DECODING = "decoding"
-    FINISHED = "finished"
-    FAILED = "failed"
+    PENDING = 0
+    PREFILLING = 1
+    DECODING = 2
+    FINISHED = 3
+    FAILED = 4
 
 
 @dataclass
@@ -163,6 +161,7 @@ class RequestState:
     def __post_init__(self):
         # If no max length is set, we set an absurdly high value which will never be reached
         self._new_tokens_limit = 2147483647 if self.max_new_tokens is None else self.max_new_tokens
+        self.remaining_prefill_tokens = self.initial_tokens[:]
 
     @property
     def status(self) -> RequestStatus:
@@ -219,12 +218,13 @@ class RequestState:
 
         # Stop if we reached an EOS token
         is_eos = token_id == self.eos_token_id and self.eos_token_id != -1
-        current_len = self.generated_len() - 1  # do not count the temporary token
+        current_len = self.generated_len()
 
         # Replace the temporary token if we're not finishing due to max length
         # (EOS tokens should still be added to the output)
         if is_eos or (current_len < self._new_tokens_limit):
-            self.generated_tokens[-1] = token_id
+            self.generated_tokens.append(token_id)
+            self.tokens_to_process = [token_id] # TODO: BUG: are we sure on this? If double TMP? 
             current_len += 1
         else:
             logger.warning(f"Request {self.request_id} generated a useless token: {token_id}")
@@ -251,8 +251,6 @@ class RequestState:
 
     def to_generation_output(self):
         """Convert the request state to a GenerationOutput object."""
-        if self.generated_tokens and self.generated_tokens[-1] == TMP_TOKEN_ID:
-            self.generated_tokens.pop()
         if self._true_initial_tokens:
             self.generated_tokens = self.initial_tokens[self._true_initial_tokens :] + self.generated_tokens
             self.initial_tokens = self.initial_tokens[: self._true_initial_tokens]
@@ -276,7 +274,6 @@ class RequestState:
             initial_tokens=self.initial_tokens,
             num_children=self.num_children,
             tokens_to_process=self.tokens_to_process[:],
-            remaining_prefill_tokens=self.remaining_prefill_tokens[:],
             generated_tokens=self.generated_tokens[:],
             allocated_blocks=self.allocated_blocks,
             position_offset=self.position_offset,
@@ -290,22 +287,20 @@ class RequestState:
             error=self.error,
             record_timestamps=self.record_timestamps,
         )
+        # Modified by __post_init__
+        new_request.remaining_prefill_tokens = self.remaining_prefill_tokens[:]
         return new_request
 
     def create_equivalent_initial_request(self) -> "RequestState":
         """Creates an equivalent new request by removing the generated tokens and adding them to the initial prompt. The
         created request has THE SAME request_id. Notably, we can retrieve the original request from the created one with
         the _true_initial_tokens attribute."""
-        # Remove the temporary token if it exists
-        if self.generated_tokens and self.generated_tokens[-1] == TMP_TOKEN_ID:
-            self.generated_tokens.pop()
         max_new_tokens = None if self.max_new_tokens is None else (self.max_new_tokens - len(self.generated_tokens))
         new_state = RequestState(
             request_id=self.request_id,
             initial_tokens=self.initial_tokens + self.generated_tokens,
             num_children=self.num_children,
             record_timestamps=self.record_timestamps,
-            tokens_to_process=self.initial_tokens + self.generated_tokens,
             max_new_tokens=max_new_tokens,
             eos_token_id=self.eos_token_id,
             streaming=self.streaming,
