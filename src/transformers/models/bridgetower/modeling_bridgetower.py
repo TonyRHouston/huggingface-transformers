@@ -1191,6 +1191,7 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
             return self.cross_modal_image_transform(hidden_states)
         return self.cross_modal_image_transform[layer_idx](hidden_states)
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1202,12 +1203,9 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         image_embeds: torch.FloatTensor | None = None,
         image_token_type_idx: int | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
         labels: torch.LongTensor | None = None,
         interpolate_pos_encoding: bool = False,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | BridgeTowerModelOutput:
         r"""
         image_embeds (`torch.FloatTensor` of shape `(batch_size, num_patches, hidden_size)`, *optional*):
@@ -1215,13 +1213,6 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
             This is useful if you want more control over how to convert `pixel_values` into patch embeddings.
         image_token_type_idx (`int`, *optional*):
             - The token type ids for images.
-        output_hidden_states (`bool`, *optional*):
-            If set to `True`, hidden states are returned as a list containing the hidden states of text, image, and
-            cross-modal components respectively. i.e. `(hidden_states_text, hidden_states_image,
-            hidden_states_cross_modal)` where each element is a list of the hidden states of the corresponding
-            modality. `hidden_states_txt/img` are a list of tensors corresponding to unimodal hidden states and
-            `hidden_states_cross_modal` is a list of tuples containing `cross_modal_text_hidden_states` and
-            `cross_modal_image_hidden_states` of each brdige layer.
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels are currently not supported.
 
@@ -1246,14 +1237,9 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
         >>> outputs.keys()
         odict_keys(['text_features', 'image_features', 'pooler_output'])
         ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        all_hidden_states_text = () if output_hidden_states else None
-        all_hidden_states_image = () if output_hidden_states else None
-        all_hidden_states_cross = () if output_hidden_states else None
-        all_hidden_states = () if output_hidden_states else None
+        all_hidden_states_text = []
+        all_hidden_states_image = []
+        all_hidden_states_cross = []
         all_self_attentions = []
 
         if inputs_embeds is not None and input_ids is None:
@@ -1261,13 +1247,10 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
                 "BridgeTowerModel does not use `inputs_embeds`.  Make sure to pass in `input_ids` instead."
             )
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         image_token_type_idx = image_token_type_idx or 1
         input_shape = input_ids.size()
         text_embeds = self.text_model.embeddings(input_ids=input_ids)
-
-        if output_hidden_states:
-            all_hidden_states_text += (text_embeds,)
+        all_hidden_states_text.append(text_embeds)
 
         if attention_mask is None:
             attention_mask = torch.ones(input_shape, dtype=torch.long, device=input_ids.device)
@@ -1281,9 +1264,7 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
         # Run the first 'split_index' layers of the textual encoder
         for layer in self.text_model.encoder.layer[:split_index]:
             text_embeds = layer(text_embeds, extend_text_masks)
-
-            if output_hidden_states:
-                all_hidden_states_text += (text_embeds,)
+            all_hidden_states_text.append(text_embeds)
 
         if image_embeds is None:
             image_embeds = self.vision_model.visual.forward_pre(
@@ -1293,14 +1274,12 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
             # Permute as BridgeTowerResidualAttention has batch_first=True
             image_embeds = image_embeds.permute(1, 0, 2)
 
-        if output_hidden_states:
-            all_hidden_states_image += (image_embeds,)
+        all_hidden_states_image.append(image_embeds)
 
         # Run the first 'split_index' layers of the visual encoder
         for block in self.vision_model.visual.transformer.resblocks[:split_index]:
             image_embeds = block(image_embeds)
-            if output_hidden_states:
-                all_hidden_states_image += (image_embeds,)
+            all_hidden_states_image.append(image_embeds)
 
         image_embeds_with_ln = self.vision_model.visual.forward_post(image_embeds.type(self.vision_model.dtype))
 
@@ -1346,8 +1325,7 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
         )
         cross_image_features = layer_outputs_image[0]
 
-        if output_hidden_states:
-            all_hidden_states_cross += ((cross_text_features, cross_image_features),)
+        all_hidden_states_cross.append((cross_text_features, cross_image_features))
 
         all_self_attentions.append((layer_outputs_text[1], layer_outputs_image[1]))
 
@@ -1396,10 +1374,9 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
 
             link_layer_index += 1
 
-            if output_hidden_states:
-                all_hidden_states_text += (text_embeds,)
-                all_hidden_states_image += (image_embeds,)
-                all_hidden_states_cross += ((cross_text_features, cross_image_features),)
+            all_hidden_states_text.append(text_embeds)
+            all_hidden_states_image.append(image_embeds)
+            all_hidden_states_cross.append((cross_text_features, cross_image_features))
 
             all_self_attentions.append((layer_outputs_text[1], layer_outputs_image[1]))
 
@@ -1407,23 +1384,16 @@ class BridgeTowerModel(BridgeTowerPreTrainedModel):
         text_features, image_features = cross_text_features, cross_image_features
         cls_features = self.get_cls_features(text_features, image_features)
 
-        if output_hidden_states:
-            all_hidden_states = (all_hidden_states_text, all_hidden_states_image, all_hidden_states_cross)
-        all_self_attentions = tuple(all_self_attentions) if output_attentions else None
-
-        if not return_dict:
-            return tuple(
-                v
-                for v in [text_features, image_features, cls_features, all_hidden_states, all_self_attentions]
-                if v is not None
-            )
-
         return BridgeTowerModelOutput(
             text_features=text_features,
             image_features=image_features,
             pooler_output=cls_features,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attentions,
+            hidden_states=(
+                tuple(all_hidden_states_text),
+                tuple(all_hidden_states_image),
+                tuple(all_hidden_states_cross),
+            ),
+            attentions=tuple(all_self_attentions),
         )
 
     def get_cls_features(self, text_features, image_features):
@@ -1757,7 +1727,7 @@ class BridgeTowerForContrastiveLearning(BridgeTowerPreTrainedModel):
         >>> print("Loss with swapped images", round(loss_swapped.item(), 4))
         Loss with swapped images 2.126
         ```"""
-        kwargs["output_hidden_states"] = True
+        kwargs.setdefault("output_hidden_states", True)
         outputs = self.bridgetower(
             input_ids=input_ids,
             attention_mask=attention_mask,
