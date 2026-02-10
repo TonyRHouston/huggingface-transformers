@@ -145,6 +145,21 @@ class GlmMoeDsaConfig(Glm4MoeLiteConfig):
     >>> configuration = model.config
     ```"""
 
+    base_model_tp_plan = {
+        "layers.*.self_attn.q_b_proj": "colwise",
+        "layers.*.self_attn.kv_b_proj": "colwise",
+        "layers.*.self_attn.o_proj": "rowwise",
+        "layers.*.mlp.experts.gate_up_proj": "packed_colwise",
+        "layers.*.mlp.experts.down_proj": "rowwise",
+        "layers.*.mlp.experts": "moe_tp_experts",
+        "layers.*.mlp.shared_experts.gate_proj": "colwise",
+        "layers.*.mlp.shared_experts.up_proj": "colwise",
+        "layers.*.mlp.shared_experts.down_proj": "rowwise",
+        "layers.*.mlp.gate_proj": "colwise",
+        "layers.*.mlp.up_proj": "colwise",
+        "layers.*.mlp.down_proj": "rowwise",
+    }
+
     def __init__(
         self,
         vocab_size: int | None = 154880,
@@ -363,6 +378,14 @@ class GlmMoeDsaAttention(nn.Module):
         k_pass, value_states = torch.split(k_pass, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
 
         k_rot = k_rot.view(batch_size, 1, seq_length, self.qk_rope_head_dim)
+
+        # In TP mode, k_rot bypasses kv_b_proj (colwise) so its gradient from local
+        # heads is only a partial sum. all_reduce_backward fixes this in backward.
+        device_mesh = getattr(self.kv_b_proj, "_hf_device_mesh", None)
+        if device_mesh is not None:
+            from ...integrations.tensor_parallel import all_reduce_backward
+
+            k_rot = all_reduce_backward(k_rot, device_mesh)
 
         cos, sin = position_embeddings
         if self.config.rope_interleave:
