@@ -24,7 +24,9 @@ from ... import initialization as init
 from ...generation import GenerationMixin
 from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_utils import PreTrainedModel
-from ...utils import ModelOutput, auto_docstring, can_return_tuple, is_xlstm_available
+from ...processing_utils import Unpack
+from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, is_xlstm_available
+from ...utils.generic import check_model_inputs
 from .configuration_xlstm import xLSTMConfig
 
 
@@ -1237,6 +1239,9 @@ class xLSTMPreTrainedModel(PreTrainedModel):
     _no_split_modules = ["xLSTMBlock"]
     supports_gradient_checkpointing = True
     _is_stateful = True
+    _can_record_outputs = {
+        "hidden_states": xLSTMBlock,
+    }
 
     def _module_name_map(self, module):
         for name, mod in self.named_modules():
@@ -1404,7 +1409,7 @@ class xLSTMModel(xLSTMPreTrainedModel):
     def set_input_embeddings(self, new_embedding):
         self.embeddings = new_embedding
 
-    @can_return_tuple
+    @check_model_inputs
     @auto_docstring
     def forward(
         self,
@@ -1412,17 +1417,20 @@ class xLSTMModel(xLSTMPreTrainedModel):
         inputs_embeds: torch.LongTensor | None = None,
         cache_params: xLSTMCache | None = None,
         use_cache: bool | None = None,
-        output_hidden_states: bool | None = None,
-        **kwargs,
-    ) -> tuple | xLSTMOutput:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> xLSTMOutput:
         r"""
         cache_params (`xLSTMCache`, *optional*):
             The xLSTMCache that carries the RNN states.
         """
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        use_cache = use_cache if use_cache is not None else (self.config.use_cache if not self.training else False)
+        # Resolved here (not just by @check_model_inputs) because the chunked inference path below
+        # is incompatible with hidden state collection and we need the value to pick the right branch.
+        output_hidden_states = kwargs.get("output_hidden_states")
+        if output_hidden_states is None:
+            output_hidden_states = self.config.output_hidden_states
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        if self.training and use_cache:
+            use_cache = False
         if self.gradient_checkpointing and self.training and use_cache:
             use_cache = False
 
@@ -1468,7 +1476,6 @@ class xLSTMModel(xLSTMPreTrainedModel):
                     offset += self.config.max_inference_chunksize
                 hidden_states = final_state
         else:
-            all_hidden_states = () if output_hidden_states else None
             for layer_idx, xlstm_block in enumerate(self.blocks):
                 hidden_states, rnn_state = xlstm_block(
                     hidden_states,
@@ -1481,21 +1488,14 @@ class xLSTMModel(xLSTMPreTrainedModel):
                         cache_params.rnn_state[layer_idx][state_idx].copy_(local_rnn_state)
                     cache_params.rnn_state_initial = False
 
-                if output_hidden_states:
-                    all_hidden_states = all_hidden_states + (hidden_states,)
-
         if use_cache:
             cache_params.seqlen_offset += inputs_embeds.shape[1]
 
         hidden_states = self.out_norm(hidden_states)
 
-        if output_hidden_states:
-            all_hidden_states = all_hidden_states + (hidden_states,)
-
         return xLSTMOutput(
             last_hidden_state=hidden_states,
             cache_params=cache_params,
-            hidden_states=all_hidden_states,
         )
 
 
@@ -1548,8 +1548,7 @@ class xLSTMForCausalLM(xLSTMPreTrainedModel, GenerationMixin):
         cache_params: xLSTMCache | None = None,
         labels: torch.LongTensor | None = None,
         use_cache: bool | None = None,
-        output_hidden_states: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | xLSTMCausalLMOutput:
         r"""
         cache_params (`xLSTMCache`, *optional*):
@@ -1560,7 +1559,6 @@ class xLSTMForCausalLM(xLSTMPreTrainedModel, GenerationMixin):
             cache_params=cache_params,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            output_hidden_states=output_hidden_states,
             **kwargs,
         )
         hidden_states = xlstm_outputs[0]
