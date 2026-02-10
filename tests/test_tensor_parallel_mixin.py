@@ -164,7 +164,7 @@ def _test_tp_forward_impl(_rank, model_path, model_class, atol, rtol):
     model.eval()
 
     vocab_size = model.config.vocab_size
-    set_seed(42)
+    set_seed(0)
     input_ids = torch.randint(0, vocab_size, (2, 64)).to(device)
 
     with torch.no_grad():
@@ -188,9 +188,9 @@ def _test_tp_backward_impl(rank, model_path, model_class, atol, rtol):
     model.train()
 
     vocab_size = model.config.vocab_size
-    set_seed(42)
+    set_seed(0)
     input_ids = torch.randint(0, vocab_size, (2, 64)).to(device)
-    set_seed(43)
+    set_seed(0)
     labels = torch.randint(0, vocab_size, (2, 64)).to(device)
 
     loss = model(input_ids, labels=labels).loss
@@ -242,7 +242,7 @@ def _test_tp_generation_impl(_rank, model_path, model_class, atol, rtol, max_new
     model_tp.eval()
     model.eval()
 
-    set_seed(42)
+    set_seed(0)
     vocab_size = model.config.vocab_size
     input_ids = torch.randint(0, vocab_size, (1, 10)).to(device)
     generation_kwargs = {
@@ -299,7 +299,7 @@ def _test_tp_generation_with_conversion_impl(_rank, model_path, model_class, ato
     _debug_log(_rank, f"{len(sharded_params)} parameters sharded")
 
     # Verification 3: Test generation
-    set_seed(42)
+    set_seed(0)
     input_ids = torch.randint(0, model.config.vocab_size, (1, 10)).to(device)
     generation_kwargs = {
         "max_new_tokens": max_new_tokens,
