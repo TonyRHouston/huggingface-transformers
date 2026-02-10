@@ -149,8 +149,8 @@ class DiaFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Test
 
         return [x["array"] for x in audio_samples]
 
-    # Copied from tests.models.dac.test_feature_extraction_dac.DacFeatureExtractionTest.test_integration with Dac->Dia
     @require_numba
+    # Copied from tests.models.dac.test_feature_extraction_dac.DacFeatureExtractionTest.test_integration with Dac->Dia
     def test_integration(self):
         # fmt: off
         EXPECTED_INPUT_VALUES = torch.tensor(
@@ -191,8 +191,8 @@ class DiaFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Test
         self.assertEqual(input_values.shape, (1, 1, 93696))
         torch.testing.assert_close(input_values[0, 0, :30], EXPECTED_INPUT_VALUES, rtol=1e-4, atol=1e-4)
 
-    # Copied from tests.models.dac.test_feature_extraction_dac.DacFeatureExtractionTest.test_truncation_and_padding with Dac->Dia
     @require_numba
+    # Copied from tests.models.dac.test_feature_extraction_dac.DacFeatureExtractionTest.test_truncation_and_padding with Dac->Dia
     def test_truncation_and_padding(self):
         input_audio = self._load_datasamples(2)
         # would be easier if the stride was like

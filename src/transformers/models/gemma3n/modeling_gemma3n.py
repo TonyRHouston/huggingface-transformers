@@ -2012,7 +2012,6 @@ class Gemma3nModel(Gemma3nPreTrainedModel):
 
         return special_image_mask, special_audio_mask
 
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
