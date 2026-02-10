@@ -529,7 +529,7 @@ class TokenizersBackend(PreTrainedTokenizerBase):
         """
         return self._tokenizer.get_added_tokens_decoder()
 
-    # BC v5: expose ``_added_tokens_encoder`` / ``_added_tokens_decoder`` attrs for custom tokenizers that expect 
+    # BC v5: expose ``_added_tokens_encoder`` / ``_added_tokens_decoder`` attrs for custom tokenizers that expect
     # them from slow tokenizers. Only supports read, not write (won't sync to Rust backend, use add_tokens() instead
     _added_tokens_encoder = added_tokens_encoder
     _added_tokens_decoder = added_tokens_decoder
