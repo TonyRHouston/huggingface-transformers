@@ -770,6 +770,7 @@ class MlaKvAProjParallel(TensorParallelLayer):
     For MLA attention: kv_a_proj_with_mqa output is [kv_lora_rank + qk_rope_head_dim].
     The rope portion bypasses kv_b_proj (colwise), so needs all_reduce_backward
     to fix its gradient in TP mode. This layer is replicated (not sharded).
+    It's only used by DeepSeek-V2 style models (deepseek_v2, longcat_flash, glm_moe_dsa, glm4_moe_lite).
     """
 
     def _prepare_output_fn(self, mod, output, device_mesh):
