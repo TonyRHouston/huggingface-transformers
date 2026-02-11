@@ -190,6 +190,10 @@ class GlmMoeDsaIndexer(nn.Module):
         k = torch.cat([k_pe, k_nope], dim=-1)  # [B, S, D]
 
         # === Key cache (managed by the indexer, not DynamicCache) ===
+        # Reset cache on prefill (new prompt) to avoid stale keys / batch-size mismatch
+        if seq_len > 1:
+            self._cached_keys = None
+
         if use_cache:
             if self._cached_keys is not None:
                 k_cached = torch.cat([self._cached_keys, k], dim=1)  # [B, T, D]
