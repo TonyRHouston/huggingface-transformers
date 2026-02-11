@@ -112,7 +112,7 @@ class ContinuousBatchingIOs:
         # Setup static tensors and compute stream
         self._setup_static_tensors()
         self._reset_static_tensors(full_reset=True)
-        self.compute_stream = torch.cuda.Stream(device=self.device)
+        self.compute_stream = torch.cuda.Stream(device=self.device) if device.type == "cuda" else None
 
     @traced(standalone=True)
     def _setup_static_tensors(self) -> None:
@@ -145,9 +145,6 @@ class ContinuousBatchingIOs:
         sliding_attention_cumulative_seqlens_k = self._bulk_input_tensor[5, :max_batch_tokens + 1]
         self.carry_over_ids = self._bulk_input_tensor[6, :max_batch_tokens]  # only used for async API
 
-        # Last coefficient is set here and never will be touched again
-        self.output_ids.zero_()
-
         # For sequence length of KV, the entries in the dict depend on the model
         self.cumulative_seqlens_k: dict[str, torch.Tensor] = {}
         if self.cache.num_full_attention_groups:
@@ -158,7 +155,7 @@ class ContinuousBatchingIOs:
         # Output tensor and scalars
         self.output_ids = torch.empty((max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
         # Last output token is never changed and set to 0 for async carry on purpose
-        self.output_ids[-1] = 0
+        self.output_ids.zero_()
         self.total_seqlen_q = 0
         self.max_seqlen_q = 0
         self.max_seqlen_k = dict.fromkeys(self.cumulative_seqlens_k.keys(), 0)
@@ -207,6 +204,9 @@ class ContinuousBatchingIOs:
             other._bulk_input_tensor.copy_(self._bulk_input_tensor, non_blocking=non_blocking)
             other.write_index_storage.copy_(self.write_index_storage, non_blocking=non_blocking)
             other.read_index_storage.copy_(self.read_index_storage, non_blocking=non_blocking)
+            if self.attention_mask is not None and other.attention_mask is not None:
+                for layer_type in self.attention_mask.keys():
+                    other.attention_mask[layer_type].copy_(self.attention_mask[layer_type], non_blocking=non_blocking)
 
 
     @traced
@@ -250,7 +250,8 @@ class ContinuousBatchingIOs:
         pass
 
     def retrieve_device_outputs(self) -> None:
-        self.compute_stream.synchronize()
+        if self.compute_stream is not None:
+            self.compute_stream.synchronize()
 
     def prepare_batch_update(self) -> tuple[list[FutureRequestState], list[int]]:
         requests_in_batch = self.requests_in_batch
@@ -504,10 +505,15 @@ class ContinuousBatchingAsyncIOs:
         next_req_id_to_new_token_position = self.io_pairs[self.current_pair].host_io.req_id_to_new_token_position
         prev_req_id_to_new_token_position = self.io_pairs[1 - self.current_pair].host_io.req_id_to_new_token_position
         carry_over_ids = [-1 for _ in range(self.max_batch_tokens)]
-        for request_id, new_token_position in next_req_id_to_new_token_position.items():
-            src_position = prev_req_id_to_new_token_position.get(request_id)
-            if src_position is not None:
-                carry_over_ids[new_token_position] = src_position
+        # Carry over happens after the raw predictions have been indexed with logits_indices. So output_ids contains the
+        # a sequence of contiguous new tokens in the order the request were added to the batch. Eg:
+        # output_ids = [new_tok_req3, new_tok_req1, new_tok_req2]
+        # Since it's also the order of req_id_to_new_token_position, we just iterate over the old positions and look for
+        # a request_id match: if there is one, we carry the predicted token over to its new position.
+        for i, req_id in enumerate(prev_req_id_to_new_token_position.keys()):
+            new_token_position = next_req_id_to_new_token_position.get(req_id)
+            if new_token_position is not None:
+                carry_over_ids[new_token_position] = i
         return torch.tensor(carry_over_ids, dtype=torch.int32)
 
     # The get_model_kwargs method is where the H2D transfer happens

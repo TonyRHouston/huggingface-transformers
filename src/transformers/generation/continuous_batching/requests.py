@@ -224,7 +224,7 @@ class RequestState:
         # (EOS tokens should still be added to the output)
         if is_eos or (current_len < self._new_tokens_limit):
             self.generated_tokens.append(token_id)
-            self.tokens_to_process = [token_id] # TODO: BUG: are we sure on this? If double TMP? 
+            self.tokens_to_process = [token_id]  # this works for 2 levels of pipelines, but not sure for more
             current_len += 1
         else:
             logger.warning(f"Request {self.request_id} generated a useless token: {token_id}")
