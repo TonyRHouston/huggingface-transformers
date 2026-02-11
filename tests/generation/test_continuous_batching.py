@@ -297,6 +297,7 @@ class ContinuousBatchingGenerationTest(unittest.TestCase):
         chats = [[{"role": "user", "content": user_message}] for user_message in user_messages]
         tokenized = [tokenizer.apply_chat_template(chat, add_generation_prompt=True) for chat in chats]
         input_ids = [(x if isinstance(x, list) else x["input_ids"]) for x in tokenized]
+        print([len(x) for x in input_ids])
 
         # Eager and SDPA implementations get a precision boost to account for the fact that an attention mask is used in
         # continuous batching but not in generate
@@ -436,7 +437,7 @@ class ContinuousBatchingGenerationTest(unittest.TestCase):
             ContinuousBatchProcessor, "soft_reset_one_request", autospec=True, side_effect=original_soft_reset
         ) as mock_soft_reset:
             self._test_continuous_batching_parity(
-                model_id=model_id, allow_block_sharing=True, attn_implementation="sdpa", use_cuda_graph=True, use_compile=False, use_async=False, num_blocks=4, num_repeat_prompts=4
+                model_id=model_id, allow_block_sharing=True, attn_implementation="sdpa", use_cuda_graph=True, use_compile=False, use_async=False, num_blocks=5, num_repeat_prompts=4, max_new_tokens=30,
             )
             self.assertTrue(mock_soft_reset.called, "Soft reset method was not called.")
 

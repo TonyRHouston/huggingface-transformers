@@ -245,12 +245,11 @@ class ContinuousBatchProcessor:
         # Record the memory metrics of the KV cache
         self.metrics.record_kv_cache_memory_metrics(self.cache)
         if logger.isEnabledFor(logging.DEBUG):
-            cumulative_seqlens_q, cumulative_seqlens_k = self.inputs_and_outputs.get_cumulative_seqlens()
-            ck = max(cumulative_seqlens_k[layer_type][-1] for layer_type in cumulative_seqlens_k)
+            actual_query_length, actual_key_length = self.inputs_and_outputs.get_actual_lengths()[:2]
             logger.debug(
                 f"Scheduled: {len(requests_in_batch)}, Waiting: {len(self.scheduler.waiting_requests)}, "
-                f"Active: {len(self.scheduler.active_requests)}. cum Q: {cumulative_seqlens_q[-1]}. "
-                f"cum KV: {ck}, free blocks: {self.cache.get_num_free_blocks()}"
+                f"Active: {len(self.scheduler.active_requests)}. cum Q: {actual_query_length}. "
+                f"cum KV: {actual_key_length}, free blocks: {self.cache.get_num_free_blocks()}"
             )
         return True
 
