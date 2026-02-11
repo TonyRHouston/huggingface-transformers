@@ -28,8 +28,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from transformers.utils.generic import OutputRecorder
-
 from ... import initialization as init
 from ...activations import ACT2FN
 from ...modeling_layers import GradientCheckpointingLayer
@@ -43,7 +41,8 @@ from ...utils import (
     can_return_tuple,
     logging,
 )
-from ...utils.generic import TransformersKwargs, check_model_inputs, is_flash_attention_requested
+from ...utils.generic import TransformersKwargs, is_flash_attention_requested, merge_with_config_defaults
+from ...utils.output_capturing import OutputRecorder, capture_outputs
 from ..auto import AutoModel
 from .configuration_sam2 import (
     Sam2Config,
@@ -548,6 +547,8 @@ class Sam2HieraDetModelOutput(ModelOutput):
 
     last_hidden_state: torch.FloatTensor | None = None
     intermediate_hidden_states: tuple[torch.FloatTensor, ...] | None = None
+    hidden_states: tuple[torch.FloatTensor, ...] | None = None
+    attentions: tuple[torch.FloatTensor, ...] | None = None
 
 
 @auto_docstring
@@ -618,7 +619,8 @@ class Sam2HieraDetModel(Sam2PreTrainedModel):
         pos_embed = pos_embed.permute(0, 2, 3, 1)
         return pos_embed
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         pixel_values: torch.FloatTensor | None = None,
@@ -670,7 +672,7 @@ class Sam2VisionModel(Sam2PreTrainedModel):
     def get_input_embeddings(self):
         return self.backbone.get_input_embeddings()
 
-    @check_model_inputs
+    @can_return_tuple
     def forward(
         self,
         pixel_values: torch.FloatTensor | None = None,
@@ -693,6 +695,8 @@ class Sam2VisionModel(Sam2PreTrainedModel):
             last_hidden_state=hidden_states,
             fpn_hidden_states=fpn_hidden_states,
             fpn_position_encoding=fpn_position_encoding,
+            hidden_states=backbone_output.hidden_states,
+            attentions=backbone_output.attentions,
         )
 
 
@@ -1391,7 +1395,8 @@ class Sam2Model(Sam2PreTrainedModel):
         )
         return prompt_output
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
