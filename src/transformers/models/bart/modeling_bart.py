@@ -519,7 +519,7 @@ class BartEncoder(BartPreTrainedModel):
         input_ids: torch.LongTensor | None = None,
         attention_mask: torch.Tensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
-        **kwargs: Unpack[TransformersKwargs],
+        **encoder_kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
@@ -547,7 +547,6 @@ class BartEncoder(BartPreTrainedModel):
             input_embeds=inputs_embeds,
             attention_mask=attention_mask,
         )
-
         for idx, encoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://huggingface.co/papers/1909.11556 for description)
             to_drop = False
@@ -560,7 +559,7 @@ class BartEncoder(BartPreTrainedModel):
                 hidden_states = encoder_layer(
                     hidden_states,
                     attention_mask,
-                    **kwargs,
+                    **encoder_kwargs,
                 )
 
         return BaseModelOutput(
