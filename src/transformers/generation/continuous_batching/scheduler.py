@@ -131,7 +131,7 @@ class Scheduler(ABC):
         pending, this is where we look for a prefix match and split the request if found."""
         # If prefix sharing is enabled, we look for a prefix match and split the request if found
         if self.cache.use_prefix_sharing and state.status == RequestStatus.PENDING:
-            prefill_length = self.cache.search_prefix_match(state.request_id, state.tokens_to_process)
+            prefill_length = self.cache.search_prefix_match(state.request_id, state.remaining_prefill_tokens)
             if prefill_length > 0:
                 self.active_requests[state.request_id] = state
                 request_ids_to_remove_from_waiting.add(state.request_id)
@@ -139,8 +139,8 @@ class Scheduler(ABC):
                 # We keep track of the number of allocated blocks to avoid double allocation
                 state.allocated_blocks += prefill_length // self.cache.block_size
                 # Even if we match the whole request, we keep at least 1 token to start decoding
-                prefill_length = min(prefill_length, len(state.tokens_to_process) - 1)
-                state.remaining_prefill_tokens = state.tokens_to_process[prefill_length:]
+                prefill_length = min(prefill_length, len(state.remaining_prefill_tokens) - 1)
+                state.remaining_prefill_tokens = state.remaining_prefill_tokens[prefill_length:]
                 state.tokens_to_process = state.tokens_to_process[prefill_length:]
                 state.position_offset += prefill_length
 
@@ -208,6 +208,7 @@ class Scheduler(ABC):
 
         for state in candidates:
             num_free_blocks = self.cache.get_num_free_blocks()
+            print(f"Trying to schedule request {state.request_id} w/ state {state.status}: {num_free_blocks = }")
             # If we are out the safety margin, we only accept decoding requests or the first prefill request
             outside_safety_margin = num_free_blocks < safety_margins
             if outside_safety_margin and scheduled_requests and state.status != RequestStatus.DECODING:
@@ -230,6 +231,7 @@ class Scheduler(ABC):
             request_len = min(len(request_tokens), token_budget)
             # Check there will be enough cache for the new tokens
             allocation_successful = self._allocate_blocks_if_needed(state, request_len)
+            print(f"{allocation_successful = } {request_len = } {cache_needed = } {cache_budget = } {num_free_blocks = }")
 
             # If the allocation would not be successful, we move on to the next request
             if not allocation_successful:
@@ -270,6 +272,7 @@ class Scheduler(ABC):
             # Early exit of the loop if we have no budget left
             if token_budget == 0 or cache_budget == 0:
                 break
+        print(f"{len(scheduled_requests) = } {one_allocation_failed = } {token_budget = } {cache_budget = }")
 
         return scheduled_requests, one_allocation_failed
 
