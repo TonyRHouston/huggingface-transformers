@@ -17,6 +17,8 @@ from collections.abc import Iterator
 from math import ceil
 from typing import TypeVar
 
+import torch
+
 from .requests import logger
 
 
@@ -388,13 +390,10 @@ class FullAttentionCacheAllocator(CacheAllocator):
         if block_table is None:
             raise ValueError(f"No block table found for request {request_id}")
         # Compute the physical indices
-        physical_indices = []
-        for i in range(past_length + query_length):
-            block_idx = i // self.block_size
-            block_offset = i % self.block_size
-            physical_index = block_table[block_idx] * self.block_size + block_offset
-            physical_indices.append(physical_index)
-        return physical_indices
+        physical_indices = torch.empty((len(block_table), self.block_size), dtype=torch.int32, device="cpu")
+        physical_indices[:] = torch.tensor(block_table, dtype=torch.int32, device="cpu").reshape(-1, 1)
+        physical_indices = self.block_size * physical_indices + torch.arange(self.block_size, dtype=torch.int32, device="cpu").unsqueeze(0)
+        return physical_indices.view(-1)[:past_length + query_length].tolist()
 
     def get_write_indices(self, request_id: str, past_length: int, query_length: int) -> list[int]:
         """Returns the physical indices for writing to the cache. For a group of full attention layers, we write the new
