@@ -667,6 +667,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModel):
     # NOTE: FP8 quantization uses `_keep_in_fp32_modules` (not `_strict`) to decide which modules to NOT convert.
     # We must keep `indexer.weights_proj` as a plain Linear to match the checkpoint (no `weight_scale_inv`).
     _keep_in_fp32_modules = ["indexer.weights_proj"]
+    _keys_to_ignore_on_load_unexpected = [r"model\.layers\.78.*"]
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -751,8 +752,6 @@ class GlmMoeDsaRotaryEmbedding(nn.Module):
 
 @auto_docstring
 class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
-    _keys_to_ignore_on_load_unexpected = [r"model\.layers\.78.*"]
-
     def __init__(self, config: GlmMoeDsaConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id

@@ -644,6 +644,7 @@ class GlmMoeDsaPreTrainedModel(Glm4MoePreTrainedModel):
     # We must keep `indexer.weights_proj` as a plain Linear to match the checkpoint (no `weight_scale_inv`).
     _keep_in_fp32_modules = ["indexer.weights_proj"]
     _keep_in_fp32_modules_strict = ["e_score_correction_bias"]
+    _keys_to_ignore_on_load_unexpected = [r"model\.layers\.78.*"]
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -654,7 +655,7 @@ class GlmMoeDsaPreTrainedModel(Glm4MoePreTrainedModel):
 
 
 class GlmMoeDsaModel(Glm4MoeModel):
-    _keys_to_ignore_on_load_unexpected = [r"model\.layers\.78.*"]
+    pass
 
 
 class GlmMoeDsaForCausalLM(Glm4MoeForCausalLM):
