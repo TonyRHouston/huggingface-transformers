@@ -86,6 +86,7 @@ from .integrations.tensor_parallel import (
 from .loss.loss_utils import LOSS_MAPPING
 from .modeling_flash_attention_utils import lazy_import_flash_attention, lazy_import_paged_flash_attention
 from .modeling_rope_utils import ROPE_INIT_FUNCTIONS
+from .patching_utils import filter_weight_conversions, patching_context
 from .pytorch_utils import id_tensor_storage
 from .quantizers import HfQuantizer
 from .quantizers.auto import get_hf_quantizer
@@ -3816,6 +3817,11 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             key_mapping (`dict[str, str], *optional*):
                 A potential mapping of the weight names if using a model on the Hub which is compatible to a Transformers
                 architecture, but was not converted accordingly.
+            patch_mapping (`dict[str, Type[torch.nn.Module]], *optional*):
+                A dictionary mapping module names to replacement module classes for patching the model architecture
+                before weight loading. This allows replacing specific components (e.g., MixtralExperts) with custom
+                alternatives. The keys should be class names as strings (e.g., "MixtralExperts"), and values
+                should be the replacement classes.
             kwargs (remaining dictionary of keyword arguments, *optional*):
                 Can be used to update the configuration object (after it being loaded) and initiate the model (e.g.,
                 `output_attentions=True`). Behaves differently depending on whether a `config` is provided or
@@ -3878,6 +3884,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         use_kernels = kwargs.pop("use_kernels", False)
         kernel_config = kwargs.pop("kernel_config", None)
         key_mapping = kwargs.pop("key_mapping", None)
+        patch_config = kwargs.pop("patch_config", None)
 
         if distributed_config is not None and tp_plan is None:
             tp_plan = "auto"
@@ -4025,8 +4032,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         config.name_or_path = pretrained_model_name_or_path
         model_init_context = cls.get_init_context(dtype, is_quantized, _is_ds_init_called)
         config = copy.deepcopy(config)  # We do not want to modify the config inplace in from_pretrained.
-        with ContextManagers(model_init_context):
-            # Let's make sure we don't run the init function of buffer modules
+        with ContextManagers(model_init_context), patching_context(cls, patch_config):
             model = cls(config, *model_args, **model_kwargs)
 
             if hf_quantizer is not None:  # replace module with quantized modules (does not touch weights)
@@ -4044,6 +4050,9 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
 
         # Obtain the weight conversion mapping for this model if any are registered
         weight_conversions = get_model_conversion_mapping(model, key_mapping, hf_quantizer)
+
+        # Filter out weight conversions according to the patch config
+        weight_conversions = filter_weight_conversions(weight_conversions, patch_config)
 
         if _torch_distributed_available and device_mesh is not None:  # add hooks to nn.Modules: no weights
             model = distribute_model(model, tp_plan, distributed_config, device_mesh, tp_size)
