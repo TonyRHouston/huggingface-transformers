@@ -207,7 +207,6 @@ class BrosSelfAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         encoder_hidden_states: torch.Tensor | None = None,
         encoder_attention_mask: torch.Tensor | None = None,
-        output_attentions: torch.Tensor | None = False,
     ) -> tuple[torch.Tensor]:
         hidden_shape = (hidden_states.shape[0], -1, self.num_attention_heads, self.attention_head_size)
         query_layer = self.query(hidden_states).view(hidden_shape).transpose(1, 2)
@@ -254,7 +253,7 @@ class BrosSelfAttention(nn.Module):
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
 
-        outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
+        outputs = (context_layer, attention_probs)
 
         if self.is_decoder:
             outputs = outputs + (None,)
@@ -289,15 +288,13 @@ class BrosAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         encoder_hidden_states: torch.Tensor | None = None,
         encoder_attention_mask: torch.Tensor | None = None,
-        output_attentions: bool | None = False,
     ) -> tuple[torch.Tensor]:
         self_outputs = self.self(
-            hidden_states=hidden_states,
+            hidden_states,
             bbox_pos_emb=bbox_pos_emb,
             attention_mask=attention_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
-            output_attentions=output_attentions,
         )
         attention_output = self.output(self_outputs[0], hidden_states)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
@@ -356,13 +353,12 @@ class BrosLayer(GradientCheckpointingLayer):
         attention_mask: torch.FloatTensor | None = None,
         encoder_hidden_states: torch.FloatTensor | None = None,
         encoder_attention_mask: torch.FloatTensor | None = None,
-        output_attentions: bool | None = False,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         self_attention_outputs = self.attention(
             hidden_states,
             bbox_pos_emb=bbox_pos_emb,
             attention_mask=attention_mask,
-            output_attentions=output_attentions,
         )
         attention_output = self_attention_outputs[0]
 
@@ -383,7 +379,7 @@ class BrosLayer(GradientCheckpointingLayer):
                 attention_mask=attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,
-                output_attentions=output_attentions,
+                **kwargs,
             )
             attention_output = cross_attention_outputs[0]
             outputs = outputs + cross_attention_outputs[1:-1]  # add cross attentions if we output attention weights
@@ -422,40 +418,22 @@ class BrosEncoder(nn.Module):
         attention_mask: torch.FloatTensor | None = None,
         encoder_hidden_states: torch.FloatTensor | None = None,
         encoder_attention_mask: torch.FloatTensor | None = None,
-        output_attentions: bool | None = False,
-        output_hidden_states: bool | None = False,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | BaseModelOutputWithCrossAttentions:
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attentions = () if output_attentions else None
-        all_cross_attentions = () if output_attentions and self.config.add_cross_attention else None
-
         for i, layer_module in enumerate(self.layer):
-            if output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states,)
-
             layer_outputs = layer_module(
-                hidden_states=hidden_states,
+                hidden_states,
                 bbox_pos_emb=bbox_pos_emb,
                 attention_mask=attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,
-                output_attentions=output_attentions,
+                **kwargs,
             )
 
             hidden_states = layer_outputs[0]
-            if output_attentions:
-                all_self_attentions = all_self_attentions + (layer_outputs[1],)
-                if self.config.add_cross_attention:
-                    all_cross_attentions = all_cross_attentions + (layer_outputs[2],)
-
-        if output_hidden_states:
-            all_hidden_states = all_hidden_states + (hidden_states,)
 
         return BaseModelOutputWithCrossAttentions(
             last_hidden_state=hidden_states,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attentions,
-            cross_attentions=all_cross_attentions,
         )
 
 
@@ -560,7 +538,6 @@ class BrosModel(BrosPreTrainedModel):
         self.embeddings.word_embeddings = value
 
     @check_model_inputs
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -688,7 +665,6 @@ class BrosForTokenClassification(BrosPreTrainedModel):
 
         self.post_init()
 
-    @check_model_inputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -801,7 +777,6 @@ class BrosSpadeEEForTokenClassification(BrosPreTrainedModel):
 
         self.post_init()
 
-    @check_model_inputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -932,7 +907,6 @@ class BrosSpadeELForTokenClassification(BrosPreTrainedModel):
 
         self.post_init()
 
-    @check_model_inputs
     @can_return_tuple
     @auto_docstring
     def forward(
