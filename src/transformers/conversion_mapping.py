@@ -328,18 +328,19 @@ def _build_checkpoint_conversion_mapping():
         ),
     ]
 
-    mapping["ernie4_5_moe"] = mapping["qwen2_moe"].copy()
-    mapping["ernie4_5_moe"] += [
-        WeightRenaming("mlp.moe_statics.e_score_correction_bias", "mlp.gate.moe_statics.e_score_correction_bias"),
+    mapping["ernie4_5_moe"] = [
         WeightConverter(
-            source_patterns="mlp.experts.gate_up_proj$",
+            source_patterns=[
+                "mlp.experts.*.gate_proj.weight",
+                "mlp.experts.*.up_proj.weight",
+            ],
             target_patterns="mlp.experts.gate_up_proj",
-            operations=[Force16BytesAlignment()],
+            operations=[MergeModulelist(dim=0), Concatenate(dim=1), Force16BytesAlignment()],
         ),
         WeightConverter(
-            source_patterns="mlp.experts.down_proj$",
+            source_patterns="mlp.experts.*.down_proj.weight",
             target_patterns="mlp.experts.down_proj",
-            operations=[Force16BytesAlignment()],
+            operations=[MergeModulelist(dim=0), Force16BytesAlignment()],
         ),
     ]
     mapping["minimax_m2"] = mapping["mixtral"].copy()
@@ -349,17 +350,19 @@ def _build_checkpoint_conversion_mapping():
     mapping["exaone_moe"] = mapping["qwen2_moe"].copy()
     mapping["exaone_moe"] += [WeightRenaming("mlp.e_score_correction_bias", "mlp.gate.e_score_correction_bias")]
 
-    mapping["solar_open"] = mapping["qwen2_moe"].copy()
-    mapping["solar_open"] += [
+    mapping["solar_open"] = [
         WeightConverter(
-            source_patterns="mlp.experts.gate_up_proj$",
+            source_patterns=[
+                "mlp.experts.*.gate_proj.weight",
+                "mlp.experts.*.up_proj.weight",
+            ],
             target_patterns="mlp.experts.gate_up_proj",
-            operations=[Force16BytesAlignment()],
+            operations=[MergeModulelist(dim=0), Concatenate(dim=1), Force16BytesAlignment()],
         ),
         WeightConverter(
-            source_patterns="mlp.experts.down_proj$",
+            source_patterns="mlp.experts.*.down_proj.weight",
             target_patterns="mlp.experts.down_proj",
-            operations=[Force16BytesAlignment()],
+            operations=[MergeModulelist(dim=0), Force16BytesAlignment()],
         ),
     ]
 
