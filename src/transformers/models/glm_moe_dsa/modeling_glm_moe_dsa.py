@@ -77,7 +77,7 @@ def apply_rotary_pos_emb(
     x: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
-    interleaved: bool = True,
+    interleaved: bool = False,
     unsqueeze_dim: int = 1,
 ) -> torch.Tensor:
     """
