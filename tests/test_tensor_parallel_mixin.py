@@ -434,11 +434,7 @@ class TensorParallelTesterMixin(ABC):
 
     @is_tensor_parallel_test
     def test_tp_generation_direct(self):
-        """Test TP generation with direct load path (no conversion mapping).
-
-        Loading path: checkpoint → TP sharding → model → generate
-        Applies to: Dense models (Llama, Mistral, etc.) where checkpoint format == model format
-        """
+        # Test TP generation: fused checkpoint → TP sharding → model → generate
         self._skip_if_not_supported()
 
         config = self.model_tester.get_config()
@@ -455,19 +451,11 @@ class TensorParallelTesterMixin(ABC):
                 tmp_dir, model_class, atol, rtol, max_new_tokens
             )
 
-    # ============================================================
-    # Public test methods - PATH B: Conversion + Load (MoE models)
-    # ============================================================
     @is_tensor_parallel_test
     def test_tp_generation_with_conversion(self):
-        """Test TP generation with conversion mapping path (MoE weight fusion).
-        Loading path: original checkpoint → conversion mapping → TP sharding → model → generate
-        Applies to: MoE models (Mixtral, Qwen2-MoE, etc.) where checkpoint has unfused experts
-        """
+        # Test TP generation: unfused checkpoint → conversion mapping → TP sharding → model → generate
         self._skip_if_not_supported()
 
-        # Only run for models with conversion mapping (e.g., MoE models like Mixtral, Qwen2-MoE)
-        # These models have checkpoint weights in unfused format that need conversion during loading
         config = self.model_tester.get_config()
         model_type = getattr(config, "model_type", None)
         if model_type not in _MODEL_TO_CONVERSION_PATTERN:
@@ -480,7 +468,7 @@ class TensorParallelTesterMixin(ABC):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             model = model_class(config)
-            model.save_pretrained(tmp_dir, save_original_format=False)
+            model.save_pretrained(tmp_dir, save_original_format=True)
             _init_distributed(tp=self.tensor_parallel_size)(_test_tp_generation_with_conversion_impl)(
                 tmp_dir, model_class, atol, rtol, max_new_tokens
             )

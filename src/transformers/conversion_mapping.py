@@ -329,6 +329,7 @@ def _build_checkpoint_conversion_mapping():
     ]
 
     mapping["ernie4_5_moe"] = [
+        WeightRenaming("mlp.moe_statics.e_score_correction_bias", "mlp.gate.moe_statics.e_score_correction_bias"),
         WeightConverter(
             source_patterns=[
                 "mlp.experts.*.gate_proj.weight",
