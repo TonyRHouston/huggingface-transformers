@@ -725,7 +725,9 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                     to_block_size,
                 )
                 right_slice = w2[:, 4 * to_block_size :]
-                attn_probs_view[p1, p2, -2, :, i2[-1]] = right_slice.view(from_block_size, n_rand_blocks, to_block_size)
+                attn_probs_view[p1, p2, -2, :, i2[-1]] = right_slice.view(
+                    from_block_size, n_rand_blocks, to_block_size
+                )
 
         # last query block
         # corresponding to `last_context_layer`

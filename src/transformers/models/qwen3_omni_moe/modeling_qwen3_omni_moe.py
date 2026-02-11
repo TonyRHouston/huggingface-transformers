@@ -586,9 +586,6 @@ class Qwen3OmniMoeAudioEncoderLayer(GradientCheckpointingLayer):
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
             attention_mask (`torch.FloatTensor`): attention mask of size
                 `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
         """
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
