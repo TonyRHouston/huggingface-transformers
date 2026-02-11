@@ -422,7 +422,7 @@ class ContinuousBatchingGenerationTest(unittest.TestCase):
 
     def test_continuous_batching_long_generate(self) -> None:
         model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        self._test_continuous_batching_parity(model_id, allow_block_sharing=True, attn_implementation="flash_attention_2", use_cuda_graph=True, use_compile=True, max_new_tokens=80)
+        self._test_continuous_batching_parity(model_id, allow_block_sharing=True, attn_implementation="flash_attention_2", use_cuda_graph=True, use_compile=True, use_async=False, max_new_tokens=80)
 
     def test_continuous_batching_few_blocks(self) -> None:
         """This test verifies that generation works with a very small number of blocks, ie. small enough that we need to
