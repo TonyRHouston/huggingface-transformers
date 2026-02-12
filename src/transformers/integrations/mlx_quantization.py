@@ -88,7 +88,6 @@ class MlxLinear(nn.Linear):
         bits: int = 4,
         group_size: int = 128,
     ):
-
         nn.Module.__init__(self)
 
         self.in_features = in_features
@@ -107,16 +106,12 @@ class MlxLinear(nn.Linear):
         # with the original checkpoint values before MlxQuantize converts them.
         if dtype == torch.uint32:
             # Pre-quantized: packed shape [N, K_packed] in uint32
-            self.weight = nn.Parameter(
-                torch.zeros(out_features, k_packed, dtype=torch.uint32), requires_grad=False
-            )
+            self.weight = nn.Parameter(torch.zeros(out_features, k_packed, dtype=torch.uint32), requires_grad=False)
         else:
             # Quantize-on-the-fly: full shape [N, K] in the original dtype
             # (dtype=None → PyTorch default float). The MlxQuantize ConversionOp
             # will transform this into packed uint32 + scales + qbiases.
-            self.weight = nn.Parameter(
-                torch.zeros(out_features, in_features, dtype=dtype), requires_grad=False
-            )
+            self.weight = nn.Parameter(torch.zeros(out_features, in_features, dtype=dtype), requires_grad=False)
 
         # For pre-quantized (dtype==uint32): scales/qbiases will be loaded
         # from the checkpoint in whatever dtype they were saved as.
@@ -124,12 +119,8 @@ class MlxLinear(nn.Linear):
         # them in the original weight's dtype (e.g. bfloat16).
         # We use float16 as the placeholder — it gets overwritten either way.
         scales_dtype = torch.float16 if dtype == torch.uint32 else (dtype or torch.float16)
-        self.scales = nn.Parameter(
-            torch.zeros(out_features, n_groups, dtype=scales_dtype), requires_grad=False
-        )
-        self.qbiases = nn.Parameter(
-            torch.zeros(out_features, n_groups, dtype=scales_dtype), requires_grad=False
-        )
+        self.scales = nn.Parameter(torch.zeros(out_features, n_groups, dtype=scales_dtype), requires_grad=False)
+        self.qbiases = nn.Parameter(torch.zeros(out_features, n_groups, dtype=scales_dtype), requires_grad=False)
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features))
@@ -216,6 +207,7 @@ def replace_with_mlx_linear(
 
     return model
 
+
 def _affine_quantize_tensor(weight: torch.Tensor, group_size: int, bits: int):
     """
     Quantize a 2-D float weight ``[N, K]`` into packed uint32 + scales + biases.
@@ -231,13 +223,13 @@ def _affine_quantize_tensor(weight: torch.Tensor, group_size: int, bits: int):
     n_groups = K // group_size
 
     w_grouped = weight.float().reshape(N, n_groups, group_size)
-    w_min = w_grouped.min(dim=-1).values   # [N, n_groups]
+    w_min = w_grouped.min(dim=-1).values  # [N, n_groups]
     w_max = w_grouped.max(dim=-1).values
 
     scales = ((w_max - w_min) / max_val).clamp(min=1e-8)
     biases = w_min
 
-    w_int = ((w_grouped - biases.unsqueeze(-1)) / scales.unsqueeze(-1))
+    w_int = (w_grouped - biases.unsqueeze(-1)) / scales.unsqueeze(-1)
     w_int = w_int.round().clamp(0, max_val).to(torch.int32).reshape(N, K)
 
     # Pack into uint32
@@ -249,7 +241,9 @@ def _affine_quantize_tensor(weight: torch.Tensor, group_size: int, bits: int):
     return w_packed.to(torch.uint32), scales, biases
 
 
-def _affine_dequantize_tensor(w_packed: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, group_size: int, bits: int):
+def _affine_dequantize_tensor(
+    w_packed: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, group_size: int, bits: int
+):
     """
     Dequantize a packed uint32 weight ``[N, K_packed]`` back to float.
 

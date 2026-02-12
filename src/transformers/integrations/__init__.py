@@ -116,14 +116,14 @@ _import_structure = {
         "run_hp_search_ray",
         "run_hp_search_wandb",
     ],
+    "mlx_quantization": [
+        "MlxLinear",
+        "replace_with_mlx_linear",
+    ],
     "moe": [
         "batched_mm_experts_forward",
         "grouped_mm_experts_forward",
         "use_experts_implementation",
-    ],
-    "mlx_quantization": [
-        "MlxLinear",
-        "replace_with_mlx_linear",
     ],
     "mxfp4": [
         "Mxfp4GptOssExperts",
@@ -266,14 +266,14 @@ if TYPE_CHECKING:
         run_hp_search_ray,
         run_hp_search_wandb,
     )
+    from .mlx_quantization import (
+        MlxLinear,
+        replace_with_mlx_linear,
+    )
     from .moe import (
         batched_mm_experts_forward,
         grouped_mm_experts_forward,
         use_experts_implementation,
-    )
-    from .mlx_quantization import (
-        MlxLinear,
-        replace_with_mlx_linear,
     )
     from .mxfp4 import (
         Mxfp4GptOssExperts,

@@ -57,10 +57,7 @@ class MlxHfQuantizer(HfQuantizer):
                 self.quantization_config.dequantize = True
                 return
             else:
-                raise RuntimeError(
-                    "MLX quantization requires an Apple Silicon GPU (MPS). "
-                    "No MPS device found."
-                )
+                raise RuntimeError("MLX quantization requires an Apple Silicon GPU (MPS). No MPS device found.")
 
         if not is_accelerate_available():
             raise ImportError("MLX quantization requires accelerate: `pip install accelerate`")
