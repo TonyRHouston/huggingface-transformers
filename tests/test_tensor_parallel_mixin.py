@@ -18,10 +18,8 @@ from abc import ABC, abstractmethod
 from transformers import set_seed
 from transformers.integrations.tensor_parallel import _get_parameter_tp_plan
 from transformers.testing_utils import (
-    backend_device_count,
     is_tensor_parallel_test,
     is_torch_available,
-    torch_device,
 )
 from transformers.utils import is_torch_greater_or_equal
 
