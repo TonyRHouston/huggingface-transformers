@@ -23,19 +23,54 @@ from .core_model_loading import WeightConverter
 
 class Patcher:
     """
-    Handles patching of modeling classes during model loading.
+    Temporarily replaces model components during loading to restructure models for specific requirements.
+
+    Use model patching to restructure models when [`AttentionInterface`], [`ExpertsInterface`], or the kernels
+    registry don't support your use case. Common scenarios include quantization library compatibility,
+    structural optimizations, and architectural experimentation.
 
     Args:
         class_mapping (`Dict[str, type[nn.Module]]`):
-            A mapping from the name of the class to be patched (e.g. "Qwen2MoeExperts") to the new class that will replace it (e.g. `ModuleListExperts`).
+            Mapping from original class names to replacement classes. Class names must exactly match those
+            in the model's module (e.g., `"Qwen2MoeExperts"` → `ModuleListExperts`).
         filtered_weight_conversion_patterns (`str` or `List[str]`, *optional*):
-            A regex pattern or a list of regex patterns to filter out weight conversions.
-            Any weight conversion with source or target patterns matching any of the specified patterns will be excluded from being applied during model loading.
-            This can be used to prevent certain weights from being converted when the structure of the model is changed significantly due to the patching,
-            and the converted weights would not be compatible with the new structure.
+            Regex patterns to exclude weight conversions. Any conversion with source or target patterns
+            matching these will be filtered out. Use this when structural changes make existing conversions
+            incompatible (e.g., `[".gate_up_proj", ".down_proj"]` when changing expert structure).
         extra_weight_conversions (`WeightConverter` or `List[WeightConverter]`, *optional*):
-            Additional weight conversions to apply during model loading. These are added before any existing conversions,
-            allowing them to be applied first.
+            Additional weight conversions for the new structure. These are prepended to existing conversions,
+            allowing you to transform weights to match your modified architecture (e.g., concatenating
+            separate Q, K, V weights into a fused QKV projection).
+
+    Example:
+        ```python
+        from transformers import AutoModelForCausalLM, Patcher, WeightConverter, Concatenate
+
+        # Restructure MoE experts for quantization compatibility
+        patcher = Patcher(
+            class_mapping={"Qwen2MoeExperts": SequentialExperts},
+            filtered_weight_conversion_patterns=[".gate_up_proj", ".down_proj"],
+        )
+
+        # Fuse QKV projections for efficient quantization kernels
+        patcher = Patcher(
+            class_mapping={"Qwen2MoeAttention": FusedQKVAttention},
+            extra_weight_conversions=[
+                WeightConverter(
+                    source_patterns=["q_proj.weight", "k_proj.weight", "v_proj.weight"],
+                    target_patterns=["qkv_proj.weight"],
+                    operations=[Concatenate(dim=0)],
+                ),
+                WeightConverter(
+                    source_patterns=["q_proj.bias", "k_proj.bias", "v_proj.bias"],
+                    target_patterns=["qkv_proj.bias"],
+                    operations=[Concatenate(dim=0)],
+                ),
+            ],
+        )
+
+        model = AutoModelForCausalLM.from_pretrained("model-name", patcher=patcher)
+        ```
     """
 
     def __init__(
