@@ -37,14 +37,15 @@ class PatchConfig:
             and the converted weights would not be compatible with the new structure.
     """
 
-    # Should we make the mapping from absolute module path instead of just class name to avoid potential conflicts?
-    # e.g. {"transformers.models.qwen2_moe.modeling_qwen2_moe.Qwen2MoeExperts": ModuleListExperts}
     mapping: dict[str, type[nn.Module]]
     filtered_weight_conversion_patterns: str | list[str] | None = None
+    extra_weight_conversions: WeightConverter | list[WeightConverter] | None = None
 
     def __post_init__(self):
         if isinstance(self.filtered_weight_conversion_patterns, str):
             self.filtered_weight_conversion_patterns = [self.filtered_weight_conversion_patterns]
+        if isinstance(self.extra_weight_conversions, WeightConverter):
+            self.extra_weight_conversions = [self.extra_weight_conversions]
 
 
 @contextmanager
@@ -105,3 +106,24 @@ def filter_weight_conversions(
         filtered_conversions.append(conversion)
 
     return filtered_conversions
+
+
+def add_weight_conversions(
+    weight_conversions: list[WeightConverter], patch_config: PatchConfig
+) -> list[WeightConverter]:
+    """
+    Add extra weight conversions specified in the patch configuration.
+
+    Args:
+        weight_conversions (`List[WeightConverter]`):
+            The list of weight conversions to add to.
+        patch_config (`PatchConfig`, *optional*):
+            The patch configuration containing the extra weight conversions to add.
+    Returns:
+        `List[WeightConverter]`: The list of weight conversions with the extra conversions added.
+    """
+
+    if patch_config.extra_weight_conversions is None:
+        return weight_conversions
+
+    return patch_config.extra_weight_conversions + weight_conversions
