@@ -267,62 +267,6 @@ def _test_tp_generation_impl(_rank, model_path, model_class, atol, rtol, max_new
         f"Max diff: {diff.max().item()} | Mean diff: {diff.mean().item()}"
     )
 
-    _debug_log(_rank, "Generation with direct load path PASSED")
-    dist.barrier()
-
-
-def _test_tp_generation_with_conversion_impl(_rank, model_path, model_class, atol, rtol, max_new_tokens):
-    """Implementation for testing TP generation with conversion mapping."""
-    set_seed(0)
-
-    model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-    model_tp.eval()
-    model.eval()
-
-    # Verification 1: Conversion mapping was applied
-    assert hasattr(model_tp, "_weight_conversions"), "Conversion mapping was not applied during load"
-    assert model_tp._weight_conversions is not None, "Conversion mapping is None"
-
-    from transformers.core_model_loading import WeightConverter
-
-    converters = [c for c in model_tp._weight_conversions if isinstance(c, WeightConverter)]
-    assert len(converters) > 0, "No WeightConverter operations were applied"
-    _debug_log(_rank, f"Applied {len(converters)} WeightConverter operations")
-    if _rank == 0:
-        for c in converters:
-            print(f"  - {c.source_patterns} -> {c.target_patterns}")
-
-    # Verification 2: TP sharding occurred
-    sharded_params = _verify_tp_sharding(_rank, model_tp, model)
-    assert len(sharded_params) > 0, "No parameters were sharded by TP"
-    _debug_log(_rank, f"{len(sharded_params)} parameters sharded")
-
-    # Verification 3: Test generation
-    set_seed(0)
-    input_ids = torch.randint(0, model.config.vocab_size, (1, 10)).to(device)
-    generation_kwargs = {
-        "max_new_tokens": max_new_tokens,
-        "do_sample": False,
-        "num_beams": 1,
-        "output_scores": True,
-        "return_dict_in_generate": True,
-        "use_cache": True,
-    }
-
-    with torch.no_grad():
-        output = model.generate(input_ids, **generation_kwargs)
-        output_tp = model_tp.generate(input_ids, **generation_kwargs)
-
-    scores = torch.stack(output.scores)
-    scores_tp = torch.stack(output_tp.scores)
-
-    diff = (scores - scores_tp).abs()
-    assert torch.allclose(scores, scores_tp, atol=atol, rtol=rtol), (
-        f"TP and non-TP model generation logits differ (with conversion mapping). "
-        f"Max diff: {diff.max().item()} | Mean diff: {diff.mean().item()}"
-    )
-
-    _debug_log(_rank, "Generation with conversion mapping PASSED")
     dist.barrier()
 
 
@@ -384,16 +328,8 @@ class TensorParallelTesterMixin(ABC):
         # if hasattr(config, "vision_config") and config.vision_config is not None:
         #     self.skipTest("VLM models are not yet supported in TP tests")
 
-    # ============================================================
-    # Public test methods - PATH A: Direct Load (Dense models)
-    # ============================================================
     @is_tensor_parallel_test
-    def test_tp_forward_direct(self):
-        """Test TP forward pass with direct load path (no conversion mapping).
-
-        Loading path: checkpoint → TP sharding → model
-        Applies to: Dense models (Llama, Mistral, etc.) where checkpoint format == model format
-        """
+    def test_tp_forward(self):
         self._skip_if_not_supported()
 
         config = self.model_tester.get_config()
@@ -401,21 +337,14 @@ class TensorParallelTesterMixin(ABC):
         atol = self.tensor_parallel_atol
         rtol = self.tensor_parallel_rtol
 
-        # Save model to temp directory so we can load it with from_pretrained
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Create and save a model with the test config
             model = model_class(config)
-            model.save_pretrained(tmp_dir)
+            model.save_pretrained(tmp_dir, save_original_format=True)
 
             _init_distributed(tp=self.tensor_parallel_size)(_test_tp_forward_impl)(tmp_dir, model_class, atol, rtol)
 
     @is_tensor_parallel_test
-    def test_tp_backward_direct(self):
-        """Test TP backward pass with direct load path (no conversion mapping).
-
-        Loading path: checkpoint → TP sharding → model
-        Applies to: Dense models (Llama, Mistral, etc.) where checkpoint format == model format
-        """
+    def test_tp_backward(self):
         self._skip_if_not_supported()
 
         config = self.model_tester.get_config()
@@ -423,11 +352,9 @@ class TensorParallelTesterMixin(ABC):
         atol = self.tensor_parallel_atol
         rtol = self.tensor_parallel_rtol
 
-        # Save model to temp directory so we can load it with from_pretrained
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Create and save a model with the test config
             model = model_class(config)
-            model.save_pretrained(tmp_dir)
+            model.save_pretrained(tmp_dir, save_original_format=True)
 
             _init_distributed(tp=self.tensor_parallel_size)(_test_tp_backward_impl)(tmp_dir, model_class, atol, rtol)
 
@@ -446,6 +373,6 @@ class TensorParallelTesterMixin(ABC):
         with tempfile.TemporaryDirectory() as tmp_dir:
             model = model_class(config)
             model.save_pretrained(tmp_dir, save_original_format=True)
-            _init_distributed(tp=self.tensor_parallel_size)(_test_tp_generation_with_conversion_impl)(
+            _init_distributed(tp=self.tensor_parallel_size)(_test_tp_generation_impl)(
                 tmp_dir, model_class, atol, rtol, max_new_tokens
             )
