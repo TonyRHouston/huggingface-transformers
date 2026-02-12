@@ -18,9 +18,9 @@ from torch import nn
 
 from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_outputs import BackboneOutput, BaseModelOutput, BaseModelOutputWithPooling
-from ...processing_utils import Unpack
-from ...utils import TransformersKwargs, auto_docstring, is_tracing, logging
-from ...utils.generic import check_model_inputs
+from ...utils import auto_docstring, is_tracing, logging
+from ...utils.generic import merge_with_config_defaults
+from ...utils.output_capturing import capture_outputs
 from ..dinov2.configuration_dinov2 import Dinov2Config
 from ..dinov2.modeling_dinov2 import (
     Dinov2Backbone,
@@ -318,7 +318,8 @@ class PixioModel(PixioPreTrainedModel):
     def get_input_embeddings(self) -> PixioPatchEmbeddings:
         return self.embeddings.patch_embeddings
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -347,7 +348,8 @@ class PixioModel(PixioPreTrainedModel):
     """
 )
 class PixioBackbone(Dinov2Backbone):
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(self, pixel_values: torch.Tensor, **kwargs: Unpack[TransformersKwargs]) -> BackboneOutput:
         r"""
