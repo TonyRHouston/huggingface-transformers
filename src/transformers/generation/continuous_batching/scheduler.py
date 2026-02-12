@@ -141,7 +141,6 @@ class Scheduler(ABC):
                 # Even if we match the whole request, we keep at least 1 token to start decoding
                 prefill_length = min(prefill_length, len(state.remaining_prefill_tokens) - 1)
                 state.remaining_prefill_tokens = state.remaining_prefill_tokens[prefill_length:]
-                state.tokens_to_process = state.tokens_to_process[prefill_length:]
                 state.position_offset += prefill_length
 
         # If the request is decoding, the tokens to process are already set
