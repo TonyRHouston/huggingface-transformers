@@ -120,6 +120,7 @@ _import_structure = {
         "MlxLinear",
         "replace_with_mlx_linear",
     ],
+    "liger": ["apply_liger_kernel"],
     "moe": [
         "batched_mm_experts_forward",
         "grouped_mm_experts_forward",
@@ -270,6 +271,7 @@ if TYPE_CHECKING:
         MlxLinear,
         replace_with_mlx_linear,
     )
+    from .liger import apply_liger_kernel
     from .moe import (
         batched_mm_experts_forward,
         grouped_mm_experts_forward,
