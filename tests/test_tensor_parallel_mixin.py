@@ -16,7 +16,6 @@ import tempfile
 from abc import ABC, abstractmethod
 
 from transformers import set_seed
-from transformers.conversion_mapping import _MODEL_TO_CONVERSION_PATTERN
 from transformers.integrations.tensor_parallel import _get_parameter_tp_plan
 from transformers.testing_utils import (
     is_tensor_parallel_test,
@@ -433,33 +432,11 @@ class TensorParallelTesterMixin(ABC):
             _init_distributed(tp=self.tensor_parallel_size)(_test_tp_backward_impl)(tmp_dir, model_class, atol, rtol)
 
     @is_tensor_parallel_test
-    def test_tp_generation_direct(self):
-        # Test TP generation: fused checkpoint → TP sharding → model → generate
+    def test_tp_generation(self):
+        # Test TP generation: unfused checkpoint → conversion mapping (if needed) → TP sharding → model → generate
         self._skip_if_not_supported()
 
         config = self.model_tester.get_config()
-        model_class = self._get_tp_model_class()
-        atol = self.tensor_parallel_atol
-        rtol = self.tensor_parallel_rtol
-        max_new_tokens = 10
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            model = model_class(config)
-            model.save_pretrained(tmp_dir)
-
-            _init_distributed(tp=self.tensor_parallel_size)(_test_tp_generation_impl)(
-                tmp_dir, model_class, atol, rtol, max_new_tokens
-            )
-
-    @is_tensor_parallel_test
-    def test_tp_generation_with_conversion(self):
-        # Test TP generation: unfused checkpoint → conversion mapping → TP sharding → model → generate
-        self._skip_if_not_supported()
-
-        config = self.model_tester.get_config()
-        model_type = getattr(config, "model_type", None)
-        if model_type not in _MODEL_TO_CONVERSION_PATTERN:
-            self.skipTest(f"Model type {model_type} has no conversion mapping defined")
 
         model_class = self._get_tp_model_class()
         atol = self.tensor_parallel_atol
