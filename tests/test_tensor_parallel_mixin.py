@@ -315,10 +315,10 @@ class TensorParallelTesterMixin(ABC):
         if not is_torch_greater_or_equal("2.9"):
             self.skipTest("Tensor parallel tests require torch >= 2.9")
 
-        if backend_device_count(torch_device) < self.tensor_parallel_size:
+        if os.cpu_count() < self.tensor_parallel_size:
             self.skipTest(
-                f"Tensor parallel tests require at least {self.tensor_parallel_size} accelerators, "
-                f"but only {backend_device_count(torch_device)} available"
+                f"Tensor parallel tests require at least {self.tensor_parallel_size} CPUs, "
+                f"but only {os.cpu_count()} available"
             )
 
         if not hasattr(self.model_tester, "causal_lm_class") or self.model_tester.causal_lm_class is None:
