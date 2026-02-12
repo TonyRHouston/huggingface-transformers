@@ -62,10 +62,6 @@ class SmolVLMPreTrainedModel(PreTrainedModel):
     _supports_sdpa = True
     _supports_flex_attn = True
     _supports_attention_backend = True
-    _can_record_outputs = {
-        "hidden_states": "LlamaDecoderLayer",
-        "attentions": "LlamaAttention",
-    }
 
 
 class SmolVLMVisionEmbeddings(nn.Module):
@@ -599,7 +595,7 @@ class SmolVLMModel(SmolVLMPreTrainedModel):
         """
     )
     @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
+    @can_return_tuple
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

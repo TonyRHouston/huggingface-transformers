@@ -571,7 +571,6 @@ class GPTBigCodeForCausalLM(GPTBigCodePreTrainedModel, GenerationMixin):
         self.post_init()
 
     @merge_with_config_defaults
-    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -666,7 +665,6 @@ class GPTBigCodeForSequenceClassification(GPTBigCodePreTrainedModel):
         self.post_init()
 
     @merge_with_config_defaults
-    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -789,7 +787,6 @@ class GPTBigCodeForTokenClassification(GPTBigCodePreTrainedModel):
         self.post_init()
 
     @merge_with_config_defaults
-    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(

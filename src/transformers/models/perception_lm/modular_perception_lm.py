@@ -98,10 +98,7 @@ class PerceptionLMMultiModalProjector(nn.Module):
 class PerceptionLMPreTrainedModel(LlavaPreTrainedModel):
     base_model_prefix = "model"
 
-    _can_record_outputs = {
-        "hidden_states": "LlamaDecoderLayer",
-        "attentions": "LlamaAttention",
-    }
+    pass
 
 
 class PerceptionLMModelOutputWithPast(LlavaModelOutputWithPast):
@@ -214,7 +211,6 @@ class PerceptionLMModel(LlavaModel):
         return special_image_mask, special_video_mask
 
     @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(

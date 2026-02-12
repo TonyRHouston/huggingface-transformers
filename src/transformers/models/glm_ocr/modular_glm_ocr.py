@@ -29,6 +29,8 @@ from ..glm4v.modeling_glm4v import (
     Glm4vPreTrainedModel,
     Glm4vRMSNorm,
     Glm4vTextAttention,
+    Glm4vTextDecoderLayer,
+    Glm4vTextModel,
     Glm4vVisionAttention,
     Glm4vVisionBlock,
     Glm4vVisionModel,
@@ -408,6 +410,17 @@ class GlmOcrVisionModel(Glm4vVisionModel):
         )
 
 
+class GlmOcrTextDecoderLayer(Glm4vTextDecoderLayer):
+    pass
+
+
+class GlmOcrTextModel(Glm4vTextModel):
+    _can_record_outputs = {
+        "hidden_states": GlmOcrTextDecoderLayer,
+        "attentions": GlmOcrTextAttention,
+    }
+
+
 class GlmOcrModel(Glm4vModel):
     pass
 
@@ -420,7 +433,7 @@ __all__ = [
     "GlmOcrConfig",
     "GlmOcrTextConfig",
     "GlmOcrVisionConfig",
-    "GlmOcrTextModel",  # noqa: F822
+    "GlmOcrTextModel",
     "GlmOcrVisionModel",
     "GlmOcrModel",
     "GlmOcrPreTrainedModel",

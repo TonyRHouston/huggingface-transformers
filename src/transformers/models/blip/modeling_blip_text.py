@@ -303,8 +303,8 @@ class BlipTextLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: torch.FloatTensor | None = None,
         encoder_hidden_states: torch.FloatTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
         encoder_attention_mask: torch.FloatTensor | None = None,
         past_key_values: Cache | None = None,
         cache_position: torch.Tensor | None = None,
@@ -375,8 +375,8 @@ class BlipTextEncoder(nn.Module):
         for layer_module in self.layer:
             hidden_states = layer_module(
                 hidden_states,
+                encoder_hidden_states,
                 attention_mask=attention_mask,
-                encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,
                 past_key_values=past_key_values,
                 cache_position=cache_position,

@@ -736,7 +736,7 @@ class Siglip2VisionModel(Siglip2PreTrainedModel):
         return self.vision_model.embeddings.patch_embedding
 
     @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -853,7 +853,7 @@ class Siglip2Model(Siglip2PreTrainedModel):
             **kwargs,
         )
 
-    @capture_outputs(tie_last_hidden_states=False)
+    @can_return_tuple
     @auto_docstring
     def get_image_features(
         self,
@@ -895,7 +895,7 @@ class Siglip2Model(Siglip2PreTrainedModel):
         )
 
     # NOTE: Siglip2Model uses Pretrained backbones, so we don't need to add `capture_outputs` here
-    @capture_outputs(tie_last_hidden_states=False)
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1028,7 +1028,7 @@ class Siglip2ForImageClassification(Siglip2PreTrainedModel):
     def set_input_embeddings(self, value: nn.Module):
         self.vision_model.embeddings.patch_embedding = value
 
-    @capture_outputs(tie_last_hidden_states=False)
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,

@@ -376,8 +376,10 @@ class ChineseCLIPVisionAttention(nn.Module):
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
 
     def forward(
-        self, hidden_states: torch.Tensor, output_attentions: bool | None = False, **kwargs
-    ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
+        self,
+        hidden_states: torch.Tensor,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Input shape: Batch x Time x Channel"""
 
         input_shape = hidden_states.shape[:-1]
@@ -504,21 +506,14 @@ class ChineseCLIPVisionLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        output_attentions: bool | None = False,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor]:
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-        """
         residual = hidden_states
 
         hidden_states = self.layer_norm1(hidden_states)
         hidden_states, attn_weights = self.self_attn(
-            hidden_states=hidden_states,
-            output_attentions=output_attentions,
+            hidden_states,
+            **kwargs,
         )
         hidden_states = residual + hidden_states
 
@@ -527,12 +522,7 @@ class ChineseCLIPVisionLayer(GradientCheckpointingLayer):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (attn_weights,)
-
-        return outputs
+        return hidden_states, attn_weights
 
 
 # Copied from transformers.models.bert.modeling_bert.BertPooler with Bert->ChineseCLIPText
@@ -680,11 +670,6 @@ class ChineseCLIPVisionEncoder(nn.Module):
 
 
 class ChineseCLIPVisionTransformer(nn.Module):
-    _can_record_outputs = {
-        "hidden_states": ChineseCLIPVisionLayer,
-        "attentions": ChineseCLIPVisionAttention,
-    }
-
     def __init__(self, config: ChineseCLIPVisionConfig):
         super().__init__()
         self.config = config
@@ -695,9 +680,6 @@ class ChineseCLIPVisionTransformer(nn.Module):
         self.encoder = ChineseCLIPVisionEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
-    @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
-    @auto_docstring
     def forward(
         self,
         pixel_values: torch.FloatTensor | None = None,
@@ -902,6 +884,10 @@ class ChineseCLIPVisionModel(ChineseCLIPPreTrainedModel):
 @auto_docstring
 class ChineseCLIPModel(ChineseCLIPPreTrainedModel):
     config: ChineseCLIPConfig
+    _can_record_outputs = {
+        "hidden_states": ChineseCLIPVisionLayer,
+        "attentions": ChineseCLIPVisionAttention,
+    }
 
     def __init__(self, config: ChineseCLIPConfig):
         super().__init__(config)
@@ -974,7 +960,7 @@ class ChineseCLIPModel(ChineseCLIPPreTrainedModel):
 
         return text_outputs
 
-    @can_return_tuple
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def get_image_features(
         self,

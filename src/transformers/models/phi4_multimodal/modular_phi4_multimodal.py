@@ -1588,7 +1588,7 @@ class Phi4MultimodalForCausalLM(Phi3ForCausalLM):
         self.post_init()
 
     @merge_with_config_defaults
-    @capture_outputs
+    @can_return_tuple
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

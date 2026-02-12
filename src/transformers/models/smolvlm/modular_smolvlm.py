@@ -95,10 +95,7 @@ class SmolVLMVisionConfig(Idefics3VisionConfig):
 
 
 class SmolVLMPreTrainedModel(Idefics3PreTrainedModel):
-    _can_record_outputs = {
-        "hidden_states": "LlamaDecoderLayer",
-        "attentions": "LlamaAttention",
-    }
+    pass
 
 
 class SmolVLMVisionTransformer(Idefics3VisionTransformer):
@@ -266,7 +263,7 @@ class SmolVLMModel(Idefics3Model):
         """
     )
     @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
+    @can_return_tuple
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

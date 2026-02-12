@@ -31,7 +31,6 @@ from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, torch_compilable_check
 from ...utils.generic import merge_with_config_defaults
-from ...utils.output_capturing import capture_outputs
 from ..auto import AutoModel
 from .configuration_perception_lm import PerceptionLMConfig
 
@@ -101,11 +100,6 @@ class PerceptionLMPreTrainedModel(PreTrainedModel):
     _can_compile_fullgraph = True
     _supports_flex_attn = True
     _supports_attention_backend = True
-
-    _can_record_outputs = {
-        "hidden_states": "LlamaDecoderLayer",
-        "attentions": "LlamaAttention",
-    }
 
 
 @dataclass
@@ -246,7 +240,6 @@ class PerceptionLMModel(PerceptionLMPreTrainedModel):
         return special_image_mask, special_video_mask
 
     @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(

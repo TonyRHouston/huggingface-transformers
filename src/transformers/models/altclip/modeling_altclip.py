@@ -749,9 +749,6 @@ class AltCLIPVisionTransformer(nn.Module):
         self.encoder = AltCLIPEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
-    @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -963,7 +960,6 @@ class AltCLIPTextModel(AltCLIPPreTrainedModel):
         return super().resize_token_embeddings(new_num_tokens)
 
     @merge_with_config_defaults
-    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -1015,6 +1011,8 @@ class AltCLIPTextModel(AltCLIPPreTrainedModel):
         return BaseModelOutputWithPoolingAndProjection(
             last_hidden_state=projection_state,
             pooler_output=pooler_output,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
         )
 
 
@@ -1096,7 +1094,6 @@ class AltCLIPModel(AltCLIPPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs(tie_last_hidden_states=False)
-    @can_return_tuple
     @auto_docstring
     def get_image_features(
         self,

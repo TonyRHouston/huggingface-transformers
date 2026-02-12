@@ -373,19 +373,11 @@ class Qwen2AudioEncoder(Qwen2AudioPreTrainedModel):
                     to_drop = True
 
             # Ignore copy
-            if to_drop:
-                layer_outputs = (None, None)
-            else:
-                layer_outputs = encoder_layer(
+            if not to_drop:
+                hidden_states = encoder_layer(
                     hidden_states,
                     attention_mask,
-                    output_attentions=output_attentions,
                 )
-
-                hidden_states = layer_outputs[0]
-
-            if output_attentions:
-                all_attentions = all_attentions + (layer_outputs[1],)
 
         # Ignore copy
         hidden_states = hidden_states.permute(0, 2, 1)

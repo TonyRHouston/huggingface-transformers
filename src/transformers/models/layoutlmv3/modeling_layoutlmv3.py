@@ -35,6 +35,7 @@ from ...processing_utils import Unpack
 from ...pytorch_utils import apply_chunking_to_forward
 from ...utils import (
     auto_docstring,
+    can_return_tuple,
     logging,
     torch_int,
 )
@@ -197,27 +198,6 @@ class LayoutLMv3TextEmbeddings(nn.Module):
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
-
-
-@auto_docstring
-class LayoutLMv3PreTrainedModel(PreTrainedModel):
-    config: LayoutLMv3Config
-    base_model_prefix = "layoutlmv3"
-    input_modalities = ("image", "text")
-    _can_record_outputs = {"hidden_states": "LayoutLMv3Layer", "attentions": "LayoutLMv3Attention"}
-
-    @torch.no_grad()
-    def _init_weights(self, module):
-        """Initialize the weights"""
-        super()._init_weights(module)
-        if isinstance(module, LayoutLMv3Model):
-            if self.config.visual_embed:
-                init.zeros_(module.cls_token)
-                init.zeros_(module.pos_embed)
-            if hasattr(module, "visual_bbox"):
-                init.copy_(module.visual_bbox, module.create_visual_bbox(image_size=(module.size, module.size)))
-        elif isinstance(module, LayoutLMv3TextEmbeddings):
-            init.copy_(module.position_ids, torch.arange(module.position_ids.shape[-1]).expand((1, -1)))
 
 
 class LayoutLMv3SelfAttention(nn.Module):
@@ -543,6 +523,27 @@ class LayoutLMv3Output(nn.Module):
 
 
 @auto_docstring
+class LayoutLMv3PreTrainedModel(PreTrainedModel):
+    config: LayoutLMv3Config
+    base_model_prefix = "layoutlmv3"
+    input_modalities = ("image", "text")
+    _can_record_outputs = {"hidden_states": LayoutLMv3Layer, "attentions": LayoutLMv3Attention}
+
+    @torch.no_grad()
+    def _init_weights(self, module):
+        """Initialize the weights"""
+        super()._init_weights(module)
+        if isinstance(module, LayoutLMv3Model):
+            if self.config.visual_embed:
+                init.zeros_(module.cls_token)
+                init.zeros_(module.pos_embed)
+            if hasattr(module, "visual_bbox"):
+                init.copy_(module.visual_bbox, module.create_visual_bbox(image_size=(module.size, module.size)))
+        elif isinstance(module, LayoutLMv3TextEmbeddings):
+            init.copy_(module.position_ids, torch.arange(module.position_ids.shape[-1]).expand((1, -1)))
+
+
+@auto_docstring
 class LayoutLMv3Model(LayoutLMv3PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -857,6 +858,7 @@ class LayoutLMv3ForTokenClassification(LayoutLMv3PreTrainedModel):
     def set_input_embeddings(self, value):
         self.layoutlmv3.set_input_embeddings(value)
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -867,11 +869,8 @@ class LayoutLMv3ForTokenClassification(LayoutLMv3PreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
         pixel_values: torch.LongTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | TokenClassifierOutput:
         r"""
         bbox (`torch.LongTensor` of shape `(batch_size, sequence_length, 4)`, *optional*):
@@ -904,8 +903,6 @@ class LayoutLMv3ForTokenClassification(LayoutLMv3PreTrainedModel):
         >>> loss = outputs.loss
         >>> logits = outputs.logits
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         outputs = self.layoutlmv3(
             input_ids,
             bbox=bbox,
@@ -913,10 +910,8 @@ class LayoutLMv3ForTokenClassification(LayoutLMv3PreTrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             pixel_values=pixel_values,
+            **kwargs,
         )
         if input_ids is not None:
             input_shape = input_ids.size()
@@ -933,10 +928,6 @@ class LayoutLMv3ForTokenClassification(LayoutLMv3PreTrainedModel):
         if labels is not None:
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return ((loss,) + output) if loss is not None else output
 
         return TokenClassifierOutput(
             loss=loss,
@@ -963,6 +954,7 @@ class LayoutLMv3ForQuestionAnswering(LayoutLMv3PreTrainedModel):
     def set_input_embeddings(self, value):
         self.layoutlmv3.set_input_embeddings(value)
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -973,12 +965,9 @@ class LayoutLMv3ForQuestionAnswering(LayoutLMv3PreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         start_positions: torch.LongTensor | None = None,
         end_positions: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
         bbox: torch.LongTensor | None = None,
         pixel_values: torch.LongTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | QuestionAnsweringModelOutput:
         r"""
         bbox (`torch.LongTensor` of shape `(batch_size, sequence_length, 4)`, *optional*):
@@ -1013,20 +1002,15 @@ class LayoutLMv3ForQuestionAnswering(LayoutLMv3PreTrainedModel):
         >>> start_scores = outputs.start_logits
         >>> end_scores = outputs.end_logits
         ```"""
-
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.layoutlmv3(
+        outputs: BaseModelOutput = self.layoutlmv3(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             bbox=bbox,
             pixel_values=pixel_values,
+            **kwargs,
         )
 
         sequence_output = outputs[0]
@@ -1052,10 +1036,6 @@ class LayoutLMv3ForQuestionAnswering(LayoutLMv3PreTrainedModel):
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
             total_loss = (start_loss + end_loss) / 2
-
-        if not return_dict:
-            output = (start_logits, end_logits) + outputs[1:]
-            return ((total_loss,) + output) if total_loss is not None else output
 
         return QuestionAnsweringModelOutput(
             loss=total_loss,
@@ -1089,6 +1069,7 @@ class LayoutLMv3ForSequenceClassification(LayoutLMv3PreTrainedModel):
     def set_input_embeddings(self, value):
         self.layoutlmv3.set_input_embeddings(value)
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1098,12 +1079,9 @@ class LayoutLMv3ForSequenceClassification(LayoutLMv3PreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
         bbox: torch.LongTensor | None = None,
         pixel_values: torch.LongTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | SequenceClassifierOutput:
         r"""
         bbox (`torch.LongTensor` of shape `(batch_size, sequence_length, 4)`, *optional*):
@@ -1135,19 +1113,15 @@ class LayoutLMv3ForSequenceClassification(LayoutLMv3PreTrainedModel):
         >>> loss = outputs.loss
         >>> logits = outputs.logits
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.layoutlmv3(
+        outputs: BaseModelOutput = self.layoutlmv3(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             bbox=bbox,
             pixel_values=pixel_values,
+            **kwargs,
         )
 
         sequence_output = outputs[0][:, 0, :]
@@ -1175,10 +1149,6 @@ class LayoutLMv3ForSequenceClassification(LayoutLMv3PreTrainedModel):
             elif self.config.problem_type == "multi_label_classification":
                 loss_fct = BCEWithLogitsLoss()
                 loss = loss_fct(logits, labels)
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return ((loss,) + output) if loss is not None else output
 
         return SequenceClassifierOutput(
             loss=loss,

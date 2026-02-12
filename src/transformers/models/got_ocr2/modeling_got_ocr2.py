@@ -285,11 +285,6 @@ class GotOcr2PreTrainedModel(PreTrainedModel):
     _supports_flex_attn = False
     _supports_attention_backend = True
 
-    _can_record_outputs = {
-        "hidden_states": "Qwen2DecoderLayer",
-        "attentions": "Qwen2Attention",
-    }
-
     @torch.no_grad()
     def _init_weights(self, module):
         super()._init_weights(module)
@@ -595,7 +590,6 @@ class GotOcr2Model(GotOcr2PreTrainedModel):
         return special_image_mask
 
     @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(

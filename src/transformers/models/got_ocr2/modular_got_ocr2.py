@@ -289,11 +289,6 @@ class GotOcr2PreTrainedModel(LlavaPreTrainedModel):
     _supports_sdpa = False
     _supports_flex_attn = False
 
-    _can_record_outputs = {
-        "hidden_states": "Qwen2DecoderLayer",
-        "attentions": "Qwen2Attention",
-    }
-
     @torch.no_grad()
     def _init_weights(self, module):
         PreTrainedModel._init_weights(self, module)
@@ -327,7 +322,6 @@ class GotOcr2Model(LlavaModel):
         return image_outputs
 
     @merge_with_config_defaults
-    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(
