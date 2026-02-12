@@ -29,11 +29,11 @@ from transformers import (
     LogitsProcessorList,
 )
 from transformers.generation.continuous_batching.cache import (
-    FullAttentionCacheAllocator,
     PagedAttentionCache,
     SlidingAttentionCacheAllocator,
     group_layers_by_attn_type,
 )
+from transformers.generation.continuous_batching.cache_manager import FullAttentionCacheAllocator
 from transformers.generation.continuous_batching.continuous_api import ContinuousBatchProcessor
 from transformers.generation.continuous_batching.input_outputs import build_attention_mask
 from transformers.testing_utils import (
@@ -253,6 +253,90 @@ class ContinuousBatchingNonGenerationTest(unittest.TestCase):
             f"Failed for: {num_requested_blocks=}, {allocated_blocks=}, {num_full_attention_groups=}, "
             f"{num_sliding_attention_groups=}, {max_sliding_window_blocks_per_request=}, {num_free_blocks=}. "
             f"Expected {expected_result}, got {result}",
+        )
+
+    @parameterized.expand(
+        [
+            # (block_size, block_table, past_length, query_length, expected_indices)
+            # Basic cases
+            (32, [0, 1, 2], 0, 16, list(range(16))),
+            (32, [0, 1, 2], 0, 32, list(range(32))),
+            (32, [0, 1, 2], 0, 64, list(range(64))),
+            # Non-contiguous blocks
+            (32, [0, 3, 6], 0, 64, list(range(32)) + list(range(96, 128))),
+            (32, [2, 5, 8], 0, 32, list(range(64, 96))),
+            # With past_length (read still starts from 0)
+            (32, [0, 1, 2], 16, 16, list(range(32))),
+            (32, [0, 1, 2], 31, 2, list(range(33))),
+            # Partial last block
+            (32, [0, 1, 2], 0, 50, list(range(32)) + list(range(32, 50))),
+            # Different block sizes
+            (16, [0, 1, 2, 3], 0, 48, list(range(48))),
+            (64, [0, 1], 0, 100, list(range(100))),
+        ]
+    )
+    def test_full_attention_get_read_indices(
+        self,
+        block_size: int,
+        block_table: list[int],
+        past_length: int,
+        query_length: int,
+        expected_indices: list[int],
+    ) -> None:
+        """Test FullAttentionCacheAllocator.get_read_indices returns correct physical indices."""
+        allocator = FullAttentionCacheAllocator(index=0, block_size=block_size, allow_block_sharing=False)
+        request_id = "test_request"
+        allocator.block_table[request_id] = block_table
+
+        result = allocator.get_read_indices(request_id, past_length, query_length)
+        self.assertEqual(
+            result,
+            expected_indices,
+            f"Failed for {block_size=}, {block_table=}, {past_length=}, {query_length=}",
+        )
+
+    @parameterized.expand(
+        [
+            # (block_size, block_table, past_length, query_length, expected_indices)
+            # Start of sequence
+            (32, [0, 1, 2], 0, 16, list(range(16))),
+            (32, [0, 1, 2], 0, 32, list(range(32))),
+            # Continue in same block
+            (32, [0, 1, 2], 16, 16, list(range(16, 32))),
+            # Cross block boundary
+            (32, [0, 1, 2], 30, 4, list(range(30, 34))),
+            (32, [0, 1, 2], 31, 2, [31, 32]),
+            # Non-contiguous blocks
+            (32, [0, 3, 6], 30, 4, [30, 31, 96, 97]),
+            (32, [2, 5, 8], 60, 10, list(range(188, 192)) + list(range(256, 262))),
+            # Decode step (single token)
+            (32, [0, 1, 2], 0, 1, [0]),
+            (32, [0, 1, 2], 31, 1, [31]),
+            (32, [0, 1, 2], 32, 1, [32]),
+            (32, [0, 1, 2], 63, 1, [63]),
+            # Different block sizes
+            (16, [0, 1, 2, 3], 14, 4, [14, 15, 16, 17]),
+            (64, [0, 1], 60, 10, list(range(60, 70))),
+        ]
+    )
+    def test_full_attention_get_write_indices(
+        self,
+        block_size: int,
+        block_table: list[int],
+        past_length: int,
+        query_length: int,
+        expected_indices: list[int],
+    ) -> None:
+        """Test FullAttentionCacheAllocator.get_write_indices returns correct physical indices."""
+        allocator = FullAttentionCacheAllocator(index=0, block_size=block_size, allow_block_sharing=False)
+        request_id = "test_request"
+        allocator.block_table[request_id] = block_table
+
+        result = allocator.get_write_indices(request_id, past_length, query_length)
+        self.assertEqual(
+            result,
+            expected_indices,
+            f"Failed for {block_size=}, {block_table=}, {past_length=}, {query_length=}",
         )
 
 
