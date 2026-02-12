@@ -15,115 +15,112 @@
 import importlib
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass
 
 import torch.nn as nn
 
 from .core_model_loading import WeightConverter
 
 
-@dataclass
-class PatchConfig:
+class Patcher:
     """
-    Configuration for patching modeling classes during model loading.
+    Handles patching of modeling classes during model loading.
 
     Args:
-        mapping (`Dict[str, type[nn.Module]]`):
+        class_mapping (`Dict[str, type[nn.Module]]`):
             A mapping from the name of the class to be patched (e.g. "Qwen2MoeExperts") to the new class that will replace it (e.g. `ModuleListExperts`).
         filtered_weight_conversion_patterns (`str` or `List[str]`, *optional*):
             A regex pattern or a list of regex patterns to filter out weight conversions.
             Any weight conversion with source or target patterns matching any of the specified patterns will be excluded from being applied during model loading.
             This can be used to prevent certain weights from being converted when the structure of the model is changed significantly due to the patching,
             and the converted weights would not be compatible with the new structure.
+        extra_weight_conversions (`WeightConverter` or `List[WeightConverter]`, *optional*):
+            Additional weight conversions to apply during model loading. These are added before any existing conversions,
+            allowing them to be applied first.
     """
 
-    mapping: dict[str, type[nn.Module]]
-    filtered_weight_conversion_patterns: str | list[str] | None = None
-    extra_weight_conversions: WeightConverter | list[WeightConverter] | None = None
+    def __init__(
+        self,
+        class_mapping: dict[str, type[nn.Module]],
+        filtered_weight_conversion_patterns: str | list[str] | None = None,
+        extra_weight_conversions: WeightConverter | list[WeightConverter] | None = None,
+    ):
+        self.class_mapping = class_mapping
+        self.filtered_patterns = (
+            [filtered_weight_conversion_patterns]
+            if isinstance(filtered_weight_conversion_patterns, str)
+            else filtered_weight_conversion_patterns
+        )
+        self.extra_conversions = (
+            [extra_weight_conversions]
+            if isinstance(extra_weight_conversions, WeightConverter)
+            else extra_weight_conversions
+        )
+        self._original_classes = {}
 
-    def __post_init__(self):
-        if isinstance(self.filtered_weight_conversion_patterns, str):
-            self.filtered_weight_conversion_patterns = [self.filtered_weight_conversion_patterns]
-        if isinstance(self.extra_weight_conversions, WeightConverter):
-            self.extra_weight_conversions = [self.extra_weight_conversions]
+    @contextmanager
+    def get_patching_context(self, model_class: type[nn.Module]):
+        """
+        Context manager to temporarily patch the model class.
+        The specified classes in class_mapping will be replaced with the new classes for
+        the duration of the context, and then restored to their original state afterwards.
 
+        Args:
+            model_class (`type[nn.Module]`):
+                The model class to patch (e.g., Qwen2MoeForCausalLM).
+        """
+        modeling_module = importlib.import_module(model_class.__module__)
 
-@contextmanager
-def patching_context(model_class: type[nn.Module], patch_config: PatchConfig):
-    """
-    Context manager for applying temporary patches to modeling classes during model loading.
-    The specified classes in patch_config.mapping will be replaced with the new classes for
-    the duration of the context, and then restored to their original state afterwards.
-    """
+        try:
+            for module_name, replacement_class in self.class_mapping.items():
+                if hasattr(modeling_module, module_name):
+                    self._original_classes[module_name] = getattr(modeling_module, module_name)
+                    setattr(modeling_module, module_name, replacement_class)
+                else:
+                    raise AttributeError(
+                        f"Module '{modeling_module.__name__}' does not have a class named '{module_name}' to patch."
+                    )
 
-    original_classes = {}
-    modeling_module = importlib.import_module(model_class.__module__)
+            yield
 
-    try:
-        for module_name, replacement_class in patch_config.mapping.items():
-            if hasattr(modeling_module, module_name):
-                original_classes[module_name] = getattr(modeling_module, module_name)
-                setattr(modeling_module, module_name, replacement_class)
-            else:
-                raise AttributeError(
-                    f"Module '{modeling_module.__name__}' does not have a class named '{module_name}' to patch."
-                )
+        finally:
+            for module_name, original_class in self._original_classes.items():
+                setattr(modeling_module, module_name, original_class)
+            self._original_classes.clear()
 
-        yield
+    def update_weight_conversions(self, weight_conversions: list[WeightConverter]) -> list[WeightConverter]:
+        """
+        Filter and add weight conversions according to the patcher configuration.
 
-    finally:
-        for module_name, original_class in original_classes.items():
-            setattr(modeling_module, module_name, original_class)
+        Args:
+            weight_conversions (`List[WeightConverter]`):
+                The list of weight conversions to process.
 
+        Returns:
+            `List[WeightConverter]`: The processed list of weight conversions.
+        """
+        filtered = self._filter_conversions(weight_conversions)
+        return self._add_conversions(filtered)
 
-def filter_weight_conversions(
-    weight_conversions: list[WeightConverter], patch_config: PatchConfig
-) -> list[WeightConverter]:
-    """
-    Filter out weight conversions that match any of the specified source or target patterns.
+    def _filter_conversions(self, weight_conversions: list[WeightConverter]) -> list[WeightConverter]:
+        """Filter out weight conversions that match any of the specified patterns."""
+        if self.filtered_patterns is None:
+            return weight_conversions
 
-    Args:
-        weight_conversions (`List[WeightConverter]`):
-            The list of weight conversions to filter.
-        patch_config (`PatchConfig`, *optional*):
-            The patch configuration containing the patterns to filter out.
-    Returns:
-        `List[WeightConverter]`: The filtered list of weight conversions.
-    """
+        filtered = []
+        for conversion in weight_conversions:
+            conversion_patterns = conversion.source_patterns + conversion.target_patterns
+            if any(
+                any(re.search(pattern, conv_pattern) for conv_pattern in conversion_patterns)
+                for pattern in self.filtered_patterns
+            ):
+                continue
+            filtered.append(conversion)
 
-    if patch_config.filtered_weight_conversion_patterns is None:
-        return weight_conversions
+        return filtered
 
-    filtered_conversions = []
-    for conversion in weight_conversions:
-        conversion_patterns = conversion.source_patterns + conversion.target_patterns
-        if any(
-            any(re.search(pattern, conv_pattern) for conv_pattern in conversion_patterns)
-            for pattern in patch_config.filtered_weight_conversion_patterns
-        ):
-            continue
+    def _add_conversions(self, weight_conversions: list[WeightConverter]) -> list[WeightConverter]:
+        """Add extra weight conversions specified in the patcher configuration."""
+        if self.extra_conversions is None:
+            return weight_conversions
 
-        filtered_conversions.append(conversion)
-
-    return filtered_conversions
-
-
-def add_weight_conversions(
-    weight_conversions: list[WeightConverter], patch_config: PatchConfig
-) -> list[WeightConverter]:
-    """
-    Add extra weight conversions specified in the patch configuration.
-
-    Args:
-        weight_conversions (`List[WeightConverter]`):
-            The list of weight conversions to add to.
-        patch_config (`PatchConfig`, *optional*):
-            The patch configuration containing the extra weight conversions to add.
-    Returns:
-        `List[WeightConverter]`: The list of weight conversions with the extra conversions added.
-    """
-
-    if patch_config.extra_weight_conversions is None:
-        return weight_conversions
-
-    return patch_config.extra_weight_conversions + weight_conversions
+        return self.extra_conversions + weight_conversions

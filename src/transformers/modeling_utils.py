@@ -86,7 +86,6 @@ from .integrations.tensor_parallel import (
 from .loss.loss_utils import LOSS_MAPPING
 from .modeling_flash_attention_utils import lazy_import_flash_attention, lazy_import_paged_flash_attention
 from .modeling_rope_utils import ROPE_INIT_FUNCTIONS
-from .patching_utils import add_weight_conversions, filter_weight_conversions, patching_context
 from .pytorch_utils import id_tensor_storage
 from .quantizers import HfQuantizer
 from .quantizers.auto import get_hf_quantizer
@@ -3879,7 +3878,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         use_kernels = kwargs.pop("use_kernels", False)
         kernel_config = kwargs.pop("kernel_config", None)
         key_mapping = kwargs.pop("key_mapping", None)
-        patch_config = kwargs.pop("patch_config", None)
+        patcher = kwargs.pop("patcher", None)
 
         if distributed_config is not None and tp_plan is None:
             tp_plan = "auto"
@@ -4027,8 +4026,8 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         config.name_or_path = pretrained_model_name_or_path
         model_init_context = cls.get_init_context(dtype, is_quantized, _is_ds_init_called)
 
-        if patch_config is not None:
-            model_init_context.append(patching_context(cls, patch_config))
+        if patcher is not None:
+            model_init_context.append(patcher.get_patching_context(cls))
 
         config = copy.deepcopy(config)  # We do not want to modify the config inplace in from_pretrained.
         with ContextManagers(model_init_context):
@@ -4050,12 +4049,8 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         # Obtain the weight conversion mapping for this model if any are registered
         weight_conversions = get_model_conversion_mapping(model, key_mapping, hf_quantizer)
 
-        if patch_config is not None:
-            # TODO: can be fused into a patch_config method that updates the weight conversions (filters and adds)
-            # Filter out weight conversions according to the patch config
-            weight_conversions = filter_weight_conversions(weight_conversions, patch_config)
-            # Add weight conversions for patched modules according to the patch config
-            weight_conversions = add_weight_conversions(weight_conversions, patch_config)
+        if patcher is not None:
+            weight_conversions = patcher.update_weight_conversions(weight_conversions)
 
         if _torch_distributed_available and device_mesh is not None:  # add hooks to nn.Modules: no weights
             model = distribute_model(model, tp_plan, distributed_config, device_mesh, tp_size)
