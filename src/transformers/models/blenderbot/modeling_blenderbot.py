@@ -37,9 +37,8 @@ from ...modeling_outputs import (
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, is_torchdynamo_compiling, logging
-from ...utils.output_capturing import capture_outputs
 from ...utils.generic import merge_with_config_defaults
-from ...utils.output_capturing import OutputRecorder
+from ...utils.output_capturing import OutputRecorder, capture_outputs
 from .configuration_blenderbot import BlenderbotConfig
 
 

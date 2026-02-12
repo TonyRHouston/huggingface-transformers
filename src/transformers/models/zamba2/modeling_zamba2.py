@@ -41,8 +41,8 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, is_torchdynamo_compiling, logging
 from ...utils.generic import maybe_autocast, merge_with_config_defaults
-from ...utils.output_capturing import capture_outputs
 from ...utils.import_utils import is_causal_conv1d_available, is_mamba_ssm_available
+from ...utils.output_capturing import capture_outputs
 from .configuration_zamba2 import Zamba2Config
 
 

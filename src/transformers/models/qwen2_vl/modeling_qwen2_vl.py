@@ -46,7 +46,7 @@ from ...utils import (
     logging,
     torch_compilable_check,
 )
-from ...utils.generic import (, merge_with_config_defaults
+from ...utils.generic import (
     is_flash_attention_requested,
     maybe_autocast,
     merge_with_config_defaults,

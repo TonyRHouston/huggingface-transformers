@@ -37,8 +37,8 @@ from ...utils import (
     can_return_tuple,
     logger,
 )
-from ...utils.output_capturing import capture_outputs
 from ...utils.generic import merge_with_config_defaults
+from ...utils.output_capturing import capture_outputs
 from ..bart.modeling_bart import (
     BartAttention,
     BartDecoderLayer,
