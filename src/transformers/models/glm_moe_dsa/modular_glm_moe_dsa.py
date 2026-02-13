@@ -29,7 +29,6 @@ from ...models.llama.modeling_llama import rotate_half
 from ...processing_utils import Unpack
 from ...utils import logging
 from ...utils.generic import is_flash_attention_requested
-from ..deepseek_v3.modeling_deepseek_v3 import yarn_get_mscale
 from ..glm4_moe.modeling_glm4_moe import (
     Glm4MoeForCausalLM,
     Glm4MoeModel,
@@ -490,13 +489,6 @@ class GlmMoeDsaAttention(nn.Module):
         )
 
         self.scaling = self.qk_head_dim ** (-0.5)
-        rope_params = self.config.rope_parameters or {}
-        if rope_params.get("rope_type", "default") != "default":
-            mscale_all_dim = rope_params.get("mscale_all_dim", 0)
-            scaling_factor = rope_params["factor"]
-            if mscale_all_dim:
-                mscale = yarn_get_mscale(scaling_factor, mscale_all_dim)
-                self.scaling = self.scaling * mscale * mscale
 
         self.indexer = GlmMoeDsaIndexer(config, layer_idx)
 
