@@ -208,22 +208,22 @@ git bisect run python3 target_script.py
     with open("run_git_bisect.sh", "w") as fp:
         fp.write(bash.strip())
 
-    result = subprocess.run(
+    bash_result = subprocess.run(
         ["bash", "run_git_bisect.sh"],
         check=False,
         capture_output=True,
         text=True,
     )
-    print(result.stdout)
+    print(bash_result.stdout)
 
     # This happens if running the script gives exit code < 0  or other issues
-    if "error: bisect run failed" in result.stderr:
-        error_msg = f"Error when running git bisect:\nbash error: {result.stderr}\nbash output:\n{result.stdout}\nset `bad_commit` to `None`."
+    if "error: bisect run failed" in bash_result.stderr:
+        error_msg = f"Error when running git bisect:\nbash error: {bash_result.stderr}\nbash output:\n{bash_result.stdout}\nset `bad_commit` to `None`."
         print(error_msg)
         return None, "git bisect failed"
 
     pattern = r"(.+) is the first bad commit"
-    commits = re.findall(pattern, result.stdout)
+    commits = re.findall(pattern, bash_result.stdout)
 
     bad_commit = None
     if len(commits) > 0:
