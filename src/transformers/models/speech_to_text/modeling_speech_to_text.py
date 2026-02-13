@@ -556,7 +556,7 @@ class Speech2TextEncoder(Speech2TextPreTrainedModel):
         self,
         input_features,
         attention_mask=None,
-        **kwargs: Unpack[TransformersKwargs],
+        **encoder_kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         inputs_embeds = self.conv(input_features)
         inputs_embeds = self.embed_scale * inputs_embeds
@@ -591,7 +591,7 @@ class Speech2TextEncoder(Speech2TextPreTrainedModel):
                 hidden_states = encoder_layer(
                     hidden_states,
                     attention_mask,
-                    **kwargs,
+                    **encoder_kwargs,
                 )
 
         hidden_states = self.layer_norm(hidden_states)

@@ -30,6 +30,7 @@ from transformers.testing_utils import require_librosa, require_numba, require_t
 from ...test_processing_common import MODALITY_INPUT_DATA, ProcessorTesterMixin
 
 
+@require_numba
 class AudioFlamingo3ProcessorTest(ProcessorTesterMixin, unittest.TestCase):
     processor_class = AudioFlamingo3Processor
 

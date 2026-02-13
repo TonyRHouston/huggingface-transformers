@@ -558,7 +558,7 @@ class M2M100Encoder(M2M100PreTrainedModel):
         input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
-        **kwargs: Unpack[TransformersKwargs],
+        **encoder_kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
@@ -599,7 +599,7 @@ class M2M100Encoder(M2M100PreTrainedModel):
                 hidden_states = encoder_layer(
                     hidden_states,
                     attention_mask,
-                    **kwargs,
+                    **encoder_kwargs,
                 )
 
         hidden_states = self.layer_norm(hidden_states)

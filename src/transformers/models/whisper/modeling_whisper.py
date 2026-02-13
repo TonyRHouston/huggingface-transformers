@@ -601,7 +601,7 @@ class WhisperEncoder(WhisperPreTrainedModel):
         self,
         input_features,
         attention_mask=None,
-        **kwargs: Unpack[TransformersKwargs],
+        **encoder_kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         r"""
         Args:
@@ -644,7 +644,7 @@ class WhisperEncoder(WhisperPreTrainedModel):
                 hidden_states = encoder_layer(
                     hidden_states,
                     None,
-                    **kwargs,
+                    **encoder_kwargs,
                 )
 
         hidden_states = self.layer_norm(hidden_states)

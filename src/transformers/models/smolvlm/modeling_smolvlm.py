@@ -748,7 +748,7 @@ class SmolVLMForConditionalGeneration(SmolVLMPreTrainedModel, GenerationMixin):
         )
 
     @merge_with_config_defaults
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,

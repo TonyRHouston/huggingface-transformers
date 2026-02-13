@@ -25,6 +25,7 @@ from datasets import load_dataset
 from transformers import WhisperFeatureExtractor
 from transformers.testing_utils import (
     check_json_file_has_correct_format,
+    require_numba,
     require_torch,
     require_torch_accelerator,
 )
@@ -109,6 +110,7 @@ class WhisperFeatureExtractionTester:
         return speech_inputs
 
 
+@require_numba
 class WhisperFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.TestCase):
     feature_extraction_class = WhisperFeatureExtractor
 

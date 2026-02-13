@@ -510,7 +510,7 @@ class PegasusEncoder(PegasusPreTrainedModel):
         input_ids=None,
         attention_mask=None,
         inputs_embeds=None,
-        **kwargs: Unpack[TransformersKwargs],
+        **encoder_kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
@@ -551,7 +551,7 @@ class PegasusEncoder(PegasusPreTrainedModel):
                 hidden_states = encoder_layer(
                     hidden_states,
                     attention_mask,
-                    **kwargs,
+                    **encoder_kwargs,
                 )
 
         hidden_states = self.layer_norm(hidden_states)
