@@ -134,6 +134,15 @@ def find_bad_commit(target_test, start_commit, end_commit):
     Returns:
         `str`: The earliest commit at which `target_test` fails.
     """
+    result = {
+        "bad_commit": None,
+        "status": None,
+        "error_at_start_commit": None,
+        "error_at_end_commit": None,
+        "error_at_bad_commit": None,
+    }
+
+
     is_pr_ci = os.environ.get("GITHUB_EVENT_NAME") in ["issue_comment", "pull_request"]
 
     # For PR comment CI, we "assume" all tests at `end_commit` pass, so any failing test at PR run
@@ -154,28 +163,20 @@ def find_bad_commit(target_test, start_commit, end_commit):
     # Maybe more detailed
     if is_flaky_at_end_commit:
         if not is_pr_ci:
-            return (
-                None,
-                f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run.",
-            )
+            result["status"] = f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run."
+            return result
         else:
-            return (
-                None,
-                f"flaky: test both passed and failed during the check of the current run on the previous commit: {end_commit}",
-            )
+            result["status"] = f"flaky: test both passed and failed during the check of the current run on the previous commit: {end_commit}"
+            return result
     elif (not is_pr_ci) and is_failing_at_end_commit:
-        return (
-            None,
-            f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run.",
-        )
+        result["status"] = f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run."
+        return result
 
     # if there is no new commit (e.g. 2 different CI runs on the same commit):
     #   - failed once on `start_commit` but passed on `end_commit`, which are the same commit --> flaky (or something change externally) --> don't report
     if start_commit == end_commit:
-        return (
-            None,
-            f"flaky: test fails on the current CI run but passed in the previous run which is running on the same commit {end_commit}.",
-        )
+        result["status"] = f"flaky: test fails on the current CI run but passed in the previous run which is running on the same commit {end_commit}."
+        return result
 
     # Now, we are (almost) sure `target_test` is not failing at `end_commit`
     # check if `start_commit` fail the test
@@ -183,12 +184,18 @@ def find_bad_commit(target_test, start_commit, end_commit):
     _, n_failed, n_passed, error_message_at_start_commit = is_bad_commit(target_test, start_commit)
     if n_passed > 0:
         # failed on CI run, but not reproducible here --> don't report
-        return None, f"flaky: test fails on the current CI run (commit: {start_commit}) but passes during the check."
+        result["status"] = f"flaky: test fails on the current CI run (commit: {start_commit}) but passes during the check."
+        return result
 
     # so we are sure the test fails on both end_commit and start_commit
     if is_pr_ci and error_message_at_start_commit != error_message_at_end_commit:
         # TODO: something is wrong?
-        return start_commit, f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
+        result["bad_commit"] = start_commit
+        result["status"] = f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
+        result["error_at_start_commit"] = error_message_at_start_commit
+        result["error_at_end_commit"] = error_message_at_end_commit
+        result["error_at_bad_commit"] = error_message_at_start_commit
+        return result
 
     create_script(target_test=target_test)
 
@@ -225,7 +232,12 @@ git bisect run python3 target_script.py
     print(f"Between `start_commit` {start_commit} and `end_commit` {end_commit}")
     print(f"bad_commit: {bad_commit}\n")
 
-    return bad_commit, "git bisect found the bad commit."
+    result["bad_commit"] = bad_commit
+    result["status"] = "git bisect found the bad commit."
+    result["error_at_start_commit"] = error_message_at_start_commit
+    result["error_at_end_commit"] = error_message_at_end_commit
+    result["error_at_bad_commit"] = error_message_at_start_commit
+    return result
 
 
 def get_commit_info(commit, pr_number=None):
@@ -328,10 +340,13 @@ if __name__ == "__main__":
             failed_tests_with_bad_commits = []
             for failure in failed_tests:
                 test, trace = failure["line"], failure["trace"]
-                commit, status = find_bad_commit(
+                bad_commit_info = find_bad_commit(
                     target_test=test, start_commit=args.start_commit, end_commit=args.end_commit
                 )
-                info = {"test": test, "commit": commit, "status": status}
+                info = {"test": test, "commit": bad_commit_info["bad_commit"]}
+                info.update(bad_commit_info)
+
+                commit = bad_commit_info["bad_commit"]
 
                 if commit in commit_info_cache:
                     commit_info = commit_info_cache[commit]
