@@ -1171,7 +1171,9 @@ class Zamba2ForSequenceClassification(ZambaForSequenceClassification):
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=pooled_logits, labels=labels, pooled_logits=pooled_logits, config=self.config, **kwargs)
+            loss = self.loss_function(
+                logits=pooled_logits, labels=labels, pooled_logits=pooled_logits, config=self.config, **kwargs
+            )
 
         return SequenceClassifierOutputWithPast(
             loss=loss,

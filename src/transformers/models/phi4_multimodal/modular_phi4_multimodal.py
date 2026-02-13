@@ -37,6 +37,7 @@ from ...processing_utils import Unpack
 from ...utils import auto_docstring, logging
 from ...utils.generic import (
     TransformersKwargs,
+    can_return_tuple,
     maybe_autocast,
     merge_with_config_defaults,
 )

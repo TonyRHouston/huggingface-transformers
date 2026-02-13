@@ -42,7 +42,7 @@ from ...utils import (
     auto_docstring,
     torch_compilable_check,
 )
-from ...utils.generic import merge_with_config_defaults
+from ...utils.generic import can_return_tuple, merge_with_config_defaults
 from ...utils.output_capturing import capture_outputs
 
 

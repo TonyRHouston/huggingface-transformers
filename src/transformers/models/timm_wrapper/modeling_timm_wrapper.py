@@ -115,7 +115,11 @@ class TimmWrapperPreTrainedModel(PreTrainedModel):
         # Also, reinit all non-persistent buffers if any!
         if hasattr(module, "init_non_persistent_buffers"):
             module.init_non_persistent_buffers()
-        elif hasattr(module, "_get_pos_embed_values") and hasattr(module, "feat_shape") and module.feat_shape is not None:
+        elif (
+            hasattr(module, "_get_pos_embed_values")
+            and hasattr(module, "feat_shape")
+            and module.feat_shape is not None
+        ):
             module.pos_embed = module._get_pos_embed_values(
                 feat_shape=module.feat_shape,
                 device=module.pos_embed.device if module.pos_embed is not None else None,
