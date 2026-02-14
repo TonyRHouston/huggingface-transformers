@@ -537,6 +537,9 @@ class CLIPModelTest(CLIPModelTesterMixin, PipelineTesterMixin, unittest.TestCase
             self, config_class=CLIPConfig, has_text_modality=False, common_properties=common_properties
         )
 
+    def test_batching_equivalence(self):
+        raise ValueError("test test!!!")
+
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
