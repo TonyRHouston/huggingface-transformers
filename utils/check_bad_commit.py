@@ -108,15 +108,8 @@ def is_bad_commit(target_test, commit):
 
     error_message = ""
     if n_failed > 0:
-        failures_match = re.search(r"={3,} FAILURES ={3,}\n(.+)", result.stdout)
-        if failures_match:
-            first_line = failures_match.group(1).strip()
-            try:
-                line = first_line[: first_line.index(" ")].split(":")[-2]
-                error_message = first_line[first_line.index(" "):]
-                error_message = f"(line {line}) {error_message}"
-            except Exception:
-                error_message = "Cannot retrieve error message."
+        match = re.search(r"^(FAILED .+ - .+)$", result.stdout, re.MULTILINE)
+        error_message = match.group(1).strip() if match else "Cannot retrieve error message."
 
     return result.returncode != 0, n_failed, n_passed, error_message
 
