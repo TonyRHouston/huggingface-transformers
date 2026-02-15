@@ -251,7 +251,7 @@ jobs:
                     # Count failures where commit is not None
                     total += sum(
                         1 for failure in failures 
-                        if isinstance(failure, dict) and failure.get('commit') is not None
+                        if isinstance(failure, dict) and failure.get('bad_commit') is not None
                     )
             return total
           
@@ -269,7 +269,7 @@ jobs:
                     test_names = [
                         failure['test'] 
                         for failure in failures 
-                        if isinstance(failure, dict) and failure.get('commit') is not None
+                        if isinstance(failure, dict) and failure.get('bad_commit') is not None
                     ]
 
                     # Add tests to model lines
