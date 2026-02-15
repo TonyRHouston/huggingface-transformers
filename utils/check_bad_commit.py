@@ -146,7 +146,7 @@ def find_bad_commit(target_test, start_commit, end_commit):
 
     # check if `end_commit` fails the test
     # (we only need one failure to conclude the test is flaky on the previous run with `end_commit`)
-    failed_before, n_failed, n_passed, error_message_at_end_commit = is_bad_commit(target_test, end_commit)
+    failed_before, n_failed, n_passed, failure_at_base_commit = is_bad_commit(target_test, end_commit)
     is_flaky_at_end_commit = ((not is_pr_ci) and n_failed > 0) or (is_pr_ci and n_failed > 0 and n_passed > 0)
     is_passing_at_end_commit = n_failed == 0
     is_failing_at_end_commit = n_passed == 0
@@ -172,20 +172,20 @@ def find_bad_commit(target_test, start_commit, end_commit):
     # Now, we are (almost) sure `target_test` is not failing at `end_commit`
     # check if `start_commit` fail the test
     # **IMPORTANT** we only need one pass to conclude the test is flaky on the current run with `start_commit`!
-    _, n_failed, n_passed, error_message_at_start_commit = is_bad_commit(target_test, start_commit)
+    _, n_failed, n_passed, failure_at_workflow_run_commit = is_bad_commit(target_test, start_commit)
     if n_passed > 0:
         # failed on CI run, but not reproducible here --> don't report
         result["status"] = f"flaky: test fails on the current CI run (commit: {start_commit}) but passes during the check."
         return result
 
     # so we are sure the test fails on both end_commit and start_commit
-    if is_pr_ci and error_message_at_end_commit != "" and error_message_at_start_commit != error_message_at_end_commit:
+    if is_pr_ci and failure_at_base_commit != "" and failure_at_workflow_run_commit != failure_at_base_commit:
         # TODO: something is wrong?
         result["bad_commit"] = start_commit
         result["status"] = f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
-        result["failure_at_workflow_run_commit"] = error_message_at_start_commit
-        result["failure_at_base_commit"] = error_message_at_end_commit
-        result["failure_at_bad_commit "] = error_message_at_start_commit
+        result["failure_at_workflow_run_commit"] = failure_at_workflow_run_commit
+        result["failure_at_base_commit"] = failure_at_base_commit
+        result["failure_at_bad_commit "] = failure_at_workflow_run_commit
         return result
 
     create_script(target_test=target_test)
@@ -217,17 +217,19 @@ git bisect run python3 target_script.py
     commits = re.findall(pattern, bash_result.stdout)
 
     bad_commit = None
+    failure_at_bad_commit = ""
     if len(commits) > 0:
         bad_commit = commits[0]
+        _, _, _, failure_at_bad_commit = is_bad_commit(target_test, end_commit)
 
     print(f"Between `start_commit` {start_commit} and `end_commit` {end_commit}")
     print(f"bad_commit: {bad_commit}\n")
 
     result["bad_commit"] = bad_commit
     result["status"] = "git bisect found the bad commit."
-    result["failure_at_workflow_run_commit"] = error_message_at_start_commit
-    result["failure_at_base_commit"] = error_message_at_end_commit
-    result["failure_at_bad_commit "] = error_message_at_start_commit
+    result["failure_at_workflow_run_commit"] = failure_at_workflow_run_commit
+    result["failure_at_base_commit"] = failure_at_base_commit
+    result["failure_at_bad_commit "] = failure_at_bad_commit
     return result
 
 
