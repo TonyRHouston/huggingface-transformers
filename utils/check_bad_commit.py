@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import copy
 import json
 import os
 import re
@@ -336,7 +337,6 @@ if __name__ == "__main__":
                 bad_commit_info = find_bad_commit(
                     target_test=test, start_commit=args.start_commit, end_commit=args.end_commit
                 )
-                bad_commit_info.pop("commit")
                 info = {"test": test}
                 info.update(bad_commit_info)
 
@@ -348,7 +348,7 @@ if __name__ == "__main__":
                     commit_info = get_commit_info(bad_commit)
                     commit_info_cache[bad_commit] = commit_info
 
-                info.update(commit_info)
+                info.update(copy.deepcopy(commit_info).pop("commit"))
                 # put failure message toward the end
                 info = {k: v for k, v in info.items() if not k.startswith(("failure_at_", "job_link"))} | {k: v for k, v in info.items() if k.startswith(("failure_at_", "job_link"))}
 
