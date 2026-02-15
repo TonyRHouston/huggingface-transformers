@@ -279,9 +279,9 @@ jobs:
                         test_name = failure['test']
                         status = failure.get('status', '')
                         if "DIFFERENT error message" in status:
-                            indicator = "(❌ ⟹ ❌ )"
+                            indicator = "(❌ ⟹ ❌)"
                         else:
-                            indicator = "(✅ ⟹ ❌ )"
+                            indicator = "(✅ ⟹ ❌)"
         
                         model_lines.append(f"    {test_name} {indicator}")
         
