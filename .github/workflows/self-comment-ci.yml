@@ -127,7 +127,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PREFIX: '[Workflow Run ⚙️](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
-          INFO: '\n\nThis comment contains \`run-slow\`, running the specified jobs'
+          INFO: '\n\nThis comment contains `run-slow`, running the specified jobs'
           BODY: '\n\nmodels: ${{ needs.get-tests.outputs.models }}\nquantizations: ${{ needs.get-tests.outputs.quantizations }}'
           github_repository: ${{ github.repository }}
           pr_number: ${{ needs.get-pr-number.outputs.PR_NUMBER }}
