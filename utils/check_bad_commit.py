@@ -150,16 +150,19 @@ def find_bad_commit(target_test, start_commit, end_commit):
     failed_before, n_failed, n_passed, failure_at_base_commit = is_bad_commit(target_test, end_commit)
     is_flaky_at_end_commit = ((not is_pr_ci) and n_failed > 0) or (is_pr_ci and n_failed > 0 and n_passed > 0)
     is_passing_at_end_commit = n_failed == 0
-    is_failing_at_end_commit = n_passed == 0
+    is_failing_at_end_commit = (failed_before and n_passed == 0)
 
     # Maybe more detailed
     if is_flaky_at_end_commit:
-        if not is_pr_ci:
-            result["status"] = f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run."
-            return result
-        else:
-            result["status"] = f"flaky: test both passed and failed during the check of the current run on the previous commit: {end_commit}"
-            return result
+        # if not is_pr_ci:
+        #     result["status"] = f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run."
+        #     return result
+        # else:
+        #     result["status"] = f"flaky: test both passed and failed during the check of the current run on the previous commit: {end_commit}"
+        #     return result
+        result["status"] = f"flaky: test both passed and failed during the check of the current run on the previous commit: {end_commit}"
+        return result
+
     elif (not is_pr_ci) and is_failing_at_end_commit:
         result["status"] = f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run."
         return result
