@@ -22,12 +22,6 @@ from .utils import logging
 
 logger = logging.get_logger(__name__)
 
-__all__ = [
-    "register_monkey_patch_mapping",
-    "clear_monkey_patch_mapping",
-    "get_monkey_patch_mapping",
-    "apply_monkey_patches",
-]
 
 _monkey_patch_mapping_cache: dict[str, type[nn.Module]] = {}
 
