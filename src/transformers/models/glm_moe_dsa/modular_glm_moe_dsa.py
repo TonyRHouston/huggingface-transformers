@@ -28,7 +28,6 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...models.llama.modeling_llama import rotate_half
 from ...processing_utils import Unpack
 from ...utils import logging
-from ...utils.generic import is_flash_attention_requested
 from ..glm4_moe.modeling_glm4_moe import (
     Glm4MoeForCausalLM,
     Glm4MoeModel,
@@ -283,6 +282,14 @@ class GlmMoeDsaConfig(PreTrainedConfig):
         self.attention_dropout = attention_dropout
         self.rope_parameters = rope_parameters
         self.rope_interleave = rope_interleave
+
+        # Warn if using flash_attention_2 instead of flash-mla
+        if kwargs.get("attn_implementation") == "flash_attention_2":
+            logger.warning_once(
+                "The glm_moe_dsa model is optimized for 'kernels-community/flash-mla'. "
+                "Using 'flash_attention_2' may not fully utilize DSA sparse attention. "
+                "Consider using attn_implementation='kernels-community/flash-mla'."
+            )
 
         super().__init__(
             pad_token_id=pad_token_id,
@@ -569,11 +576,6 @@ class GlmMoeDsaAttention(nn.Module):
         else:
             combined_mask = index_mask
 
-        # Flash attention head_dim padding (qk_head_dim != v_head_dim)
-        if is_flash_attention_requested(self.config) and self.qk_head_dim != self.v_head_dim:
-            value_states = F.pad(value_states, [0, self.qk_head_dim - self.v_head_dim])
-
-        # ===== Attention via standard interface =====
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
             self.config._attn_implementation, eager_attention_forward
         )
@@ -586,13 +588,10 @@ class GlmMoeDsaAttention(nn.Module):
             combined_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
+            topk_indices=topk_indices,  # Pass topk_indices for flash-mla sparse attention
             **kwargs,
         )
 
-        if is_flash_attention_requested(self.config) and self.qk_head_dim != self.v_head_dim:
-            attn_output = attn_output[:, :, :, : self.v_head_dim]
-
-        # ===== Output projection =====
         attn_output = attn_output.reshape(batch_size, seq_length, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights

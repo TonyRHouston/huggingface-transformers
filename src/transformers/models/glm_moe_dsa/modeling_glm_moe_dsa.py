@@ -413,11 +413,6 @@ class GlmMoeDsaAttention(nn.Module):
         else:
             combined_mask = index_mask
 
-        # Flash attention head_dim padding (qk_head_dim != v_head_dim)
-        if is_flash_attention_requested(self.config) and self.qk_head_dim != self.v_head_dim:
-            value_states = F.pad(value_states, [0, self.qk_head_dim - self.v_head_dim])
-
-        # ===== Attention via standard interface =====
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
             self.config._attn_implementation, eager_attention_forward
         )
@@ -433,10 +428,6 @@ class GlmMoeDsaAttention(nn.Module):
             **kwargs,
         )
 
-        if is_flash_attention_requested(self.config) and self.qk_head_dim != self.v_head_dim:
-            attn_output = attn_output[:, :, :, : self.v_head_dim]
-
-        # ===== Output projection =====
         attn_output = attn_output.reshape(batch_size, seq_length, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
