@@ -1168,6 +1168,7 @@ class InformerModel(InformerPreTrainedModel):
         return transformer_inputs, loc, scale, static_feat
 
     @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -1181,12 +1182,9 @@ class InformerModel(InformerPreTrainedModel):
         decoder_attention_mask: torch.LongTensor | None = None,
         encoder_outputs: list[torch.FloatTensor] | None = None,
         past_key_values: Cache | None = None,
-        output_hidden_states: bool | None = None,
-        output_attentions: bool | None = None,
         use_cache: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.LongTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> Seq2SeqTSModelOutput | tuple:
         r"""
         past_values (`torch.FloatTensor` of shape `(batch_size, sequence_length)` or `(batch_size, sequence_length, input_size)`):
@@ -1305,12 +1303,6 @@ class InformerModel(InformerPreTrainedModel):
 
         >>> last_hidden_state = outputs.last_hidden_state
         ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         transformer_inputs, loc, scale, static_feat = self.create_network_inputs(
             past_values=past_values,
             past_time_features=past_time_features,
@@ -1325,12 +1317,10 @@ class InformerModel(InformerPreTrainedModel):
             enc_input = transformer_inputs[:, : self.config.context_length, ...]
             encoder_outputs = self.encoder(
                 inputs_embeds=enc_input,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
+                **kwargs,
             )
         # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
-        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+        elif not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
                 hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
@@ -1353,14 +1343,9 @@ class InformerModel(InformerPreTrainedModel):
             encoder_hidden_states=encoder_outputs[0],
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             cache_position=cache_position,
+            **kwargs,
         )
-
-        if not return_dict:
-            return decoder_outputs + encoder_outputs + (loc, scale, static_feat)
 
         return Seq2SeqTSModelOutput(
             last_hidden_state=decoder_outputs.last_hidden_state,
@@ -1458,12 +1443,9 @@ class InformerForPrediction(InformerPreTrainedModel):
         decoder_attention_mask: torch.LongTensor | None = None,
         encoder_outputs: list[torch.FloatTensor] | None = None,
         past_key_values: Cache | None = None,
-        output_hidden_states: bool | None = None,
-        output_attentions: bool | None = None,
         use_cache: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.LongTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> Seq2SeqTSModelOutput | tuple:
         r"""
         past_values (`torch.FloatTensor` of shape `(batch_size, sequence_length)` or `(batch_size, sequence_length, input_size)`):
@@ -1607,12 +1589,10 @@ class InformerForPrediction(InformerPreTrainedModel):
 
         >>> mean_prediction = outputs.sequences.mean(dim=1)
         ```"""
-
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         if future_values is not None:
             use_cache = False
 
-        outputs = self.model(
+        outputs: Seq2SeqTSModelOutput = self.model(
             past_values=past_values,
             past_time_features=past_time_features,
             past_observed_mask=past_observed_mask,
@@ -1623,19 +1603,16 @@ class InformerForPrediction(InformerPreTrainedModel):
             decoder_attention_mask=decoder_attention_mask,
             encoder_outputs=encoder_outputs,
             past_key_values=past_key_values,
-            output_hidden_states=output_hidden_states,
-            output_attentions=output_attentions,
             use_cache=use_cache,
-            return_dict=return_dict,
             cache_position=cache_position,
+            **kwargs,
         )
 
         prediction_loss = None
         params = None
         if future_values is not None:
-            params = self.output_params(outputs[0])  # outputs.last_hidden_state
-            # loc is 3rd last and scale is 2nd last output
-            distribution = self.output_distribution(params, loc=outputs[-3], scale=outputs[-2])
+            params = self.output_params(outputs.last_hidden_state)
+            distribution = self.output_distribution(params, loc=outputs.loc, scale=outputs.scale)
 
             loss = self.loss(distribution, future_values)
 
@@ -1648,10 +1625,6 @@ class InformerForPrediction(InformerPreTrainedModel):
                 loss_weights, _ = future_observed_mask.min(dim=-1, keepdim=False)
 
             prediction_loss = weighted_average(loss, weights=loss_weights)
-
-        if not return_dict:
-            outputs = ((params,) + outputs[1:]) if params is not None else outputs[1:]
-            return ((prediction_loss,) + outputs) if prediction_loss is not None else outputs
 
         return Seq2SeqTSPredictionOutput(
             loss=prediction_loss,

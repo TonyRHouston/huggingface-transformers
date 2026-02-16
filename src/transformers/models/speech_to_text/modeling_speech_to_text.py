@@ -764,6 +764,7 @@ class Speech2TextModel(Speech2TextPreTrainedModel):
         self.decoder.embed_tokens = value
 
     @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -775,9 +776,8 @@ class Speech2TextModel(Speech2TextPreTrainedModel):
         past_key_values: Cache | None = None,
         decoder_inputs_embeds: torch.FloatTensor | None = None,
         use_cache: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.Tensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor] | Seq2SeqLMOutput:
         r"""
         decoder_input_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
@@ -819,17 +819,14 @@ class Speech2TextModel(Speech2TextPreTrainedModel):
          [1, 2, 256]
          ```"""
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_features,
                 attention_mask=attention_mask,
-                return_dict=return_dict,
                 **kwargs,
             )
-        # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
-        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+        # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput
+        elif not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
                 hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
@@ -853,13 +850,9 @@ class Speech2TextModel(Speech2TextPreTrainedModel):
             past_key_values=past_key_values,
             inputs_embeds=decoder_inputs_embeds,
             use_cache=use_cache,
-            return_dict=return_dict,
             cache_position=cache_position,
             **kwargs,
         )
-
-        if not return_dict:
-            return decoder_outputs + encoder_outputs
 
         return Seq2SeqModelOutput(
             last_hidden_state=decoder_outputs.last_hidden_state,
@@ -891,6 +884,7 @@ class Speech2TextForConditionalGeneration(Speech2TextPreTrainedModel, Generation
         # Initialize weights and apply final processing
         self.post_init()
 
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -903,9 +897,8 @@ class Speech2TextForConditionalGeneration(Speech2TextPreTrainedModel, Generation
         decoder_inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
         use_cache: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.Tensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor] | Seq2SeqLMOutput:
         r"""
         decoder_input_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
@@ -955,15 +948,13 @@ class Speech2TextForConditionalGeneration(Speech2TextPreTrainedModel, Generation
         >>> transcription
         'mister quilter is the apostle of the middle classes and we are glad to welcome his gospel'
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         if labels is not None:
             if decoder_input_ids is None and decoder_inputs_embeds is None:
                 decoder_input_ids = shift_tokens_right(
                     labels, self.config.pad_token_id, self.config.decoder_start_token_id
                 )
 
-        outputs = self.model(
+        outputs: Seq2SeqModelOutput = self.model(
             input_features,
             attention_mask=attention_mask,
             decoder_input_ids=decoder_input_ids,
@@ -972,20 +963,15 @@ class Speech2TextForConditionalGeneration(Speech2TextPreTrainedModel, Generation
             past_key_values=past_key_values,
             decoder_inputs_embeds=decoder_inputs_embeds,
             use_cache=use_cache,
-            return_dict=return_dict,
             cache_position=cache_position,
             **kwargs,
         )
-        lm_logits = self.lm_head(outputs[0])
+        lm_logits = self.lm_head(outputs.last_hidden_state)
 
         loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(lm_logits.view(-1, self.config.vocab_size), labels.view(-1))
-
-        if not return_dict:
-            output = (lm_logits,) + outputs[1:]
-            return ((loss,) + output) if loss is not None else output
 
         return Seq2SeqLMOutput(
             loss=loss,

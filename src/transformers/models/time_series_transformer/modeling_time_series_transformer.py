@@ -948,6 +948,7 @@ class TimeSeriesTransformerModel(TimeSeriesTransformerPreTrainedModel):
         return transformer_inputs, loc, scale, static_feat
 
     @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -962,9 +963,8 @@ class TimeSeriesTransformerModel(TimeSeriesTransformerPreTrainedModel):
         encoder_outputs: list[torch.FloatTensor] | None = None,
         past_key_values: Cache | None = None,
         use_cache: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.LongTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> Seq2SeqTSModelOutput | tuple:
         r"""
         past_values (`torch.FloatTensor` of shape `(batch_size, sequence_length)` or `(batch_size, sequence_length, input_size)`):
@@ -1083,8 +1083,6 @@ class TimeSeriesTransformerModel(TimeSeriesTransformerPreTrainedModel):
 
         >>> last_hidden_state = outputs.last_hidden_state
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         transformer_inputs, loc, scale, static_feat = self.create_network_inputs(
             past_values=past_values,
             past_time_features=past_time_features,
@@ -1099,11 +1097,10 @@ class TimeSeriesTransformerModel(TimeSeriesTransformerPreTrainedModel):
             enc_input = transformer_inputs[:, : self.config.context_length, ...]
             encoder_outputs = self.encoder(
                 inputs_embeds=enc_input,
-                return_dict=return_dict,
                 **kwargs,
             )
         # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
-        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+        elif not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
                 hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
@@ -1126,13 +1123,9 @@ class TimeSeriesTransformerModel(TimeSeriesTransformerPreTrainedModel):
             encoder_hidden_states=encoder_outputs[0],
             past_key_values=past_key_values,
             use_cache=use_cache,
-            return_dict=return_dict,
             cache_position=cache_position,
             **kwargs,
         )
-
-        if not return_dict:
-            return decoder_outputs + encoder_outputs + (loc, scale, static_feat)
 
         return Seq2SeqTSModelOutput(
             last_hidden_state=decoder_outputs.last_hidden_state,
@@ -1184,6 +1177,8 @@ class TimeSeriesTransformerForPrediction(TimeSeriesTransformerPreTrainedModel):
             sliced_params = [p[:, -trailing_n:] for p in params]
         return self.distribution_output.distribution(sliced_params, loc=loc, scale=scale)
 
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -1199,9 +1194,8 @@ class TimeSeriesTransformerForPrediction(TimeSeriesTransformerPreTrainedModel):
         encoder_outputs: list[torch.FloatTensor] | None = None,
         past_key_values: Cache | None = None,
         use_cache: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.LongTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> Seq2SeqTSModelOutput | tuple:
         r"""
         past_values (`torch.FloatTensor` of shape `(batch_size, sequence_length)` or `(batch_size, sequence_length, input_size)`):
@@ -1345,12 +1339,10 @@ class TimeSeriesTransformerForPrediction(TimeSeriesTransformerPreTrainedModel):
 
         >>> mean_prediction = outputs.sequences.mean(dim=1)
         ```"""
-
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         if future_values is not None:
             use_cache = False
 
-        outputs = self.model(
+        outputs: Seq2SeqTSModelOutput = self.model(
             past_values=past_values,
             past_time_features=past_time_features,
             past_observed_mask=past_observed_mask,
@@ -1362,7 +1354,6 @@ class TimeSeriesTransformerForPrediction(TimeSeriesTransformerPreTrainedModel):
             encoder_outputs=encoder_outputs,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            return_dict=return_dict,
             cache_position=cache_position,
             **kwargs,
         )
@@ -1370,9 +1361,8 @@ class TimeSeriesTransformerForPrediction(TimeSeriesTransformerPreTrainedModel):
         prediction_loss = None
         params = None
         if future_values is not None:
-            params = self.output_params(outputs[0])  # outputs.last_hidden_state
-            # loc is 3rd last and scale is 2nd last output
-            distribution = self.output_distribution(params, loc=outputs[-3], scale=outputs[-2])
+            params = self.output_params(outputs.last_hidden_state)
+            distribution = self.output_distribution(params, loc=outputs.loc, scale=outputs.scale)
 
             loss = self.loss(distribution, future_values)
 
@@ -1385,10 +1375,6 @@ class TimeSeriesTransformerForPrediction(TimeSeriesTransformerPreTrainedModel):
                 loss_weights, _ = future_observed_mask.min(dim=-1, keepdim=False)
 
             prediction_loss = weighted_average(loss, weights=loss_weights)
-
-        if not return_dict:
-            outputs = ((params,) + outputs[1:]) if params is not None else outputs[1:]
-            return ((prediction_loss,) + outputs) if prediction_loss is not None else outputs
 
         return Seq2SeqTSPredictionOutput(
             loss=prediction_loss,
