@@ -423,11 +423,13 @@ class GitEncoder(nn.Module):
         attention_mask: torch.FloatTensor | None = None,
         past_key_values: Cache | None = None,
         use_cache: bool | None = None,
-        output_attentions: bool | None = False,
-        output_hidden_states: bool | None = False,
-        return_dict: bool | None = True,
         cache_position: torch.Tensor | None = None,
+        **kwargs,
     ) -> tuple[torch.Tensor] | BaseModelOutputWithPast:
+        output_attentions = kwargs.pop("output_attentions", False)
+        output_hidden_states = kwargs.pop("output_hidden_states", False)
+        return_dict = kwargs.pop("return_dict", True)
+
         if self.gradient_checkpointing and self.training:
             if use_cache:
                 logger.warning_once(
@@ -935,8 +937,6 @@ class GitModel(GitPreTrainedModel):
         inputs_embeds: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
         use_cache: bool | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
         interpolate_pos_encoding: bool = False,
         return_dict: bool | None = None,
         cache_position: torch.Tensor | None = None,
@@ -965,10 +965,6 @@ class GitModel(GitPreTrainedModel):
         >>> outputs = model(**inputs)
         >>> last_hidden_state = outputs.last_hidden_state
         ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if input_ids is not None and inputs_embeds is not None:
@@ -1073,10 +1069,9 @@ class GitModel(GitPreTrainedModel):
             attention_mask=causal_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             cache_position=cache_position,
+            **kwargs,
         )
         sequence_output = encoder_outputs[0]
 
@@ -1125,8 +1120,6 @@ class GitForCausalLM(GitPreTrainedModel, GenerationMixin):
         labels: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
         use_cache: bool | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
         interpolate_pos_encoding: bool = False,
         return_dict: bool | None = None,
         logits_to_keep: int | torch.Tensor = 0,
@@ -1278,11 +1271,10 @@ class GitForCausalLM(GitPreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
             interpolate_pos_encoding=interpolate_pos_encoding,
             return_dict=return_dict,
             cache_position=cache_position,
+            **kwargs,
         )
 
         hidden_states = outputs[0]

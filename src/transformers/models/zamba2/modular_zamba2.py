@@ -770,10 +770,9 @@ class Zamba2AttentionDecoderLayer(ZambaAttentionDecoderLayer):
         layer_idx: int,
         attention_mask: torch.Tensor | None = None,
         past_key_values: Zamba2HybridDynamicCache | None = None,
-        output_attentions: bool | None = False,
         position_embeddings: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
+    ) -> tuple[torch.FloatTensor]:
         """
         Args:
             hidden_states (`torch.FloatTensor`): output of previous Mamba layer of shape `(batch, seq_len, embed_dim)`
@@ -784,9 +783,6 @@ class Zamba2AttentionDecoderLayer(ZambaAttentionDecoderLayer):
             attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
                 `(batch, sequence_length)` where padding elements are indicated by 0.
             past_key_values (`Zamba2HybridDynamicCache`, *optional*): cached past key and value projection states
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
             use_cache (`bool`, *optional*):
                 If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
                 (see `past_key_values`).
@@ -796,12 +792,11 @@ class Zamba2AttentionDecoderLayer(ZambaAttentionDecoderLayer):
         """
         hidden_states = torch.concatenate([hidden_states, original_hidden_states], dim=-1)
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, self_attn_weights = self.self_attn(
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             layer_idx=layer_idx,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
-            output_attentions=output_attentions,
             position_embeddings=position_embeddings,
             **kwargs,
         )
@@ -809,12 +804,7 @@ class Zamba2AttentionDecoderLayer(ZambaAttentionDecoderLayer):
         hidden_states = self.pre_ff_layernorm(hidden_states)
         hidden_states = self.feed_forward(hidden_states, layer_idx)
 
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        return outputs
+        return (hidden_states,)
 
 
 class Zamba2MambaDecoderLayer(ZambaMambaDecoderLayer):
@@ -849,7 +839,6 @@ class Zamba2HybridLayer(ZambaHybridLayer):
         attention_mask: torch.Tensor | None = None,
         causal_mask: torch.Tensor | None = None,
         past_key_values: Zamba2HybridDynamicCache | None = None,
-        output_attentions: bool | None = False,
         use_cache: bool | None = False,
         position_embeddings: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
@@ -863,9 +852,6 @@ class Zamba2HybridLayer(ZambaHybridLayer):
             attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
                 `(batch, sequence_length)` where padding elements are indicated by 0.
             past_key_values (`Zamba2HybridDynamicCache`, *optional*): cached past key and value projection states
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
             use_cache (`bool`, *optional*):
                 If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
                 (see `past_key_values`).
@@ -880,15 +866,11 @@ class Zamba2HybridLayer(ZambaHybridLayer):
             layer_idx=layer_idx,
             attention_mask=causal_mask,
             past_key_values=past_key_values,
-            output_attentions=output_attentions,
             position_embeddings=position_embeddings,
             position_ids=position_ids,
         )
 
         transformer_hidden_states = layer_outputs[0]
-
-        if output_attentions:
-            self_attn_weights = layer_outputs[1]
 
         transformer_hidden_states = self.linear(transformer_hidden_states)
 
@@ -897,13 +879,9 @@ class Zamba2HybridLayer(ZambaHybridLayer):
             transformer_hidden_states=transformer_hidden_states,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
-            output_attentions=output_attentions,
             use_cache=use_cache,
             position_embeddings=position_embeddings,
         )
-
-        if output_attentions:
-            layer_outputs = (layer_outputs[0], self_attn_weights) + layer_outputs[2:]
 
         return layer_outputs
 
@@ -1025,8 +1003,6 @@ class Zamba2Model(ZambaModel, Zamba2PreTrainedModel):
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithPast:
-        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
-
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"
@@ -1080,7 +1056,6 @@ class Zamba2Model(ZambaModel, Zamba2PreTrainedModel):
                 attention_mask,
                 causal_mask,
                 past_key_values=past_key_values,
-                output_attentions=output_attentions,
                 use_cache=use_cache,
                 position_embeddings=position_embeddings,
                 position_ids=position_ids,

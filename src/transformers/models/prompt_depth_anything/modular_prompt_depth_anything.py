@@ -289,12 +289,7 @@ class PromptDepthAnythingForDepthEstimation(DepthAnythingForDepthEstimation):
         if labels is not None:
             raise NotImplementedError("Training is not implemented yet")
 
-        output_hidden_states = kwargs.get("output_hidden_states", self.config.output_hidden_states)
-        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
-
-        outputs = self.backbone.forward_with_filtered_kwargs(
-            pixel_values, output_hidden_states=output_hidden_states, output_attentions=output_attentions
-        )
+        outputs = self.backbone.forward_with_filtered_kwargs(pixel_values, **kwargs)
         hidden_states = outputs.feature_maps
 
         _, _, height, width = pixel_values.shape
@@ -320,7 +315,7 @@ class PromptDepthAnythingForDepthEstimation(DepthAnythingForDepthEstimation):
         return DepthEstimatorOutput(
             loss=loss,
             predicted_depth=predicted_depth,
-            hidden_states=outputs.hidden_states if output_hidden_states else None,
+            hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
 
