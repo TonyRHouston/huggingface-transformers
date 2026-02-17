@@ -36,7 +36,7 @@ from ...modeling_outputs import (
 )
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import TransformersKwargs, auto_docstring, is_torchdynamo_compiling, logging
+from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, is_torchdynamo_compiling, logging
 from ...utils.deprecation import deprecate_kwarg
 from ...utils.generic import merge_with_config_defaults
 from ...utils.output_capturing import OutputRecorder, capture_outputs
@@ -1187,7 +1187,7 @@ class PegasusXModel(PegasusXPreTrainedModel):
         """
         return (self.encoder.get_position_embeddings(), self.decoder.get_position_embeddings())
 
-    @capture_outputs
+    @can_return_tuple
     @merge_with_config_defaults
     @auto_docstring
     def forward(
@@ -1318,7 +1318,7 @@ class PegasusXForConditionalGeneration(PegasusXPreTrainedModel, GenerationMixin)
         return (self.model.encoder.get_position_embeddings(), self.model.decoder.get_position_embeddings())
 
     @auto_docstring
-    @capture_outputs
+    @can_return_tuple
     def forward(
         self,
         input_ids: torch.Tensor | None = None,

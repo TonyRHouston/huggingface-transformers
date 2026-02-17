@@ -792,7 +792,7 @@ class PegasusModel(PegasusPreTrainedModel):
         return (self.encoder.get_position_embeddings(), self.decoder.get_position_embeddings())
 
     @merge_with_config_defaults
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -941,7 +941,7 @@ class PegasusForConditionalGeneration(PegasusPreTrainedModel, GenerationMixin):
         """
         return (self.model.encoder.get_position_embeddings(), self.model.decoder.get_position_embeddings())
 
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
