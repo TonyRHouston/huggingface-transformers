@@ -156,8 +156,11 @@ class GlmMoeDsaConfig(PreTrainedConfig):
             Number of top tokens selected by the indexer for sparse attention.
         index_head_dim (`int`, *optional*, defaults to 128):
             Head dimension for the indexer projections (DSA).
+        index_n_heads (`int | None`, *optional*, defaults to 32):
+            Number of heads for the indexer projections (DSA).
         indexer_rope_interleave (`bool`, *optional*, defaults to `True`):
             Whether the indexer uses interleaved rotary position embeddings.
+
 
     ```python
     >>> from transformers import GlmMoeDsaConfig, GlmMoeDsaModel
@@ -223,14 +226,12 @@ class GlmMoeDsaConfig(PreTrainedConfig):
         eos_token_id: int | None = 1,
         tie_word_embeddings: bool | None = False,
         rope_parameters: RopeParameters | dict[str, RopeParameters] | None = None,
-        rope_interleave: bool | None = True,
         mlp_layer_types=None,
         attention_bias: bool | None = False,
         attention_dropout: float | None = 0.0,
         index_topk: int | None = 2048,
         index_head_dim: int | None = 128,
         index_n_heads: int | None = 32,
-        indexer_rope_interleave: bool | None = True,
         **kwargs,
     ):
         # Model dimensions
@@ -271,7 +272,6 @@ class GlmMoeDsaConfig(PreTrainedConfig):
         self.index_topk = index_topk
         self.index_head_dim = index_head_dim
         self.index_n_heads = index_n_heads
-        self.indexer_rope_interleave = indexer_rope_interleave
 
         # General config
         self.hidden_act = hidden_act
@@ -281,15 +281,6 @@ class GlmMoeDsaConfig(PreTrainedConfig):
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
         self.rope_parameters = rope_parameters
-        self.rope_interleave = rope_interleave
-
-        # Warn if using flash_attention_2 instead of flash-mla
-        if kwargs.get("attn_implementation") == "flash_attention_2":
-            logger.warning_once(
-                "The glm_moe_dsa model is optimized for 'kernels-community/flash-mla'. "
-                "Using 'flash_attention_2' may not fully utilize DSA sparse attention. "
-                "Consider using attn_implementation='kernels-community/flash-mla'."
-            )
 
         super().__init__(
             pad_token_id=pad_token_id,
@@ -302,6 +293,7 @@ class GlmMoeDsaConfig(PreTrainedConfig):
 
 class GlmMoeDsaRMSNorm(Glm4MoeRMSNorm):
     pass
+
 
 class GlmMoeDsaIndexer(nn.Module):
     """
@@ -413,7 +405,7 @@ class GlmMoeDsaIndexer(nn.Module):
 
         # Don't force fp32 inputs here: the checkpoint stores `weights_proj.weight` in bf16.
         # Use native dtype for matmul, then upcast the result for scoring stability.
-        weights = self.weights_proj(hidden_states).float() * (self.n_heads ** -0.5)  # [B, S, H]
+        weights = self.weights_proj(hidden_states).float() * (self.n_heads**-0.5)  # [B, S, H]
 
         # q·k^T per head: [B, S, H, D] @ [B, T, D]^T → [B, S, H, T]
         scores = torch.einsum("bshd,btd->bsht", q.float(), k_cached.float()) * self.softmax_scale
@@ -552,8 +544,14 @@ class GlmMoeDsaAttention(nn.Module):
             )
 
         # ===== Indexer (DSA sparse mask) =====
-        # attention_mask is [B, 1, S, T] (4D) but indexer works with [B, S, T] (3D)
-        indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+        # attention_mask is [B, 1, S, T] (4D) for eager and (2D) otherwise but indexer works with [B, S, T] (3D)
+        indexer_mask = (
+            attention_mask[:, 0, :, :]
+            if attention_mask is not None and attention_mask.dim() == 4
+            else attention_mask.unsqueeze(1)
+            if attention_mask is not None
+            else None
+        )
         topk_indices = self.indexer(
             hidden_states,
             q_resid,
@@ -570,11 +568,15 @@ class GlmMoeDsaAttention(nn.Module):
         )
         index_mask.scatter_(-1, topk_indices, 0.0)  # [B, S, T]
         index_mask = index_mask.unsqueeze(1)  # [B, 1, S, T]
-        if attention_mask is not None:
-            causal_mask = attention_mask[:, :, :, :total_len]
+        if attention_mask is not None and attention_mask.dim() == 4:
+            causal_mask = attention_mask[..., :total_len]
             combined_mask = index_mask + causal_mask
         else:
-            combined_mask = index_mask
+            combined_mask = (
+                attention_mask.masked_fill(index_mask == float("-inf"), float("-inf"))
+                if attention_mask is not None
+                else index_mask
+            )
 
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
             self.config._attn_implementation, eager_attention_forward
@@ -608,6 +610,9 @@ class GlmMoeDsaPreTrainedModel(Glm4MoePreTrainedModel):
     _keep_in_fp32_modules = ["indexer.weights_proj"]
     _keep_in_fp32_modules_strict = ["e_score_correction_bias"]
     _keys_to_ignore_on_load_unexpected = [r"model\.layers\.78.*"]
+    _supports_flash_attn = False  # flash-mla kernels need a bit more work in the way we enable them!
+    _supports_sdpa = True
+    _supports_flex_attn = False
 
     @torch.no_grad()
     def _init_weights(self, module):

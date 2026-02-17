@@ -387,8 +387,14 @@ class GlmMoeDsaAttention(nn.Module):
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # ===== Indexer (DSA sparse mask) =====
-        # attention_mask is [B, 1, S, T] (4D) but indexer works with [B, S, T] (3D)
-        indexer_mask = attention_mask[:, 0, :, :] if attention_mask is not None else None
+        # attention_mask is [B, 1, S, T] (4D) for eager and (2D) otherwise but indexer works with [B, S, T] (3D)
+        indexer_mask = (
+            attention_mask[:, 0, :, :]
+            if attention_mask is not None and attention_mask.dim() == 4
+            else attention_mask.unsqueeze(1)
+            if attention_mask is not None
+            else None
+        )
         topk_indices = self.indexer(
             hidden_states,
             q_resid,
@@ -425,6 +431,7 @@ class GlmMoeDsaAttention(nn.Module):
             combined_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
+            indices=topk_indices,  # flash_mla_with_kvcache
             **kwargs,
         )
 
@@ -620,9 +627,9 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["GlmMoeDsaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
+    _supports_flash_attn = False  # flash-mla kernels need a bit more work in the way we enable them!
     _supports_sdpa = True
-    _supports_flex_attn = True
+    _supports_flex_attn = False
     _can_compile_fullgraph = (
         is_grouped_mm_available()
     )  # https://huggingface.co/docs/transformers/experts_interface#torchcompile
