@@ -39,7 +39,7 @@ from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, is_grouped_mm_available
-from ...utils.generic import is_flash_attention_requested, maybe_autocast, merge_with_config_defaults
+from ...utils.generic import maybe_autocast, merge_with_config_defaults
 from ...utils.output_capturing import capture_outputs
 from .configuration_glm_moe_dsa import GlmMoeDsaConfig
 
@@ -413,11 +413,15 @@ class GlmMoeDsaAttention(nn.Module):
         )
         index_mask.scatter_(-1, topk_indices, 0.0)  # [B, S, T]
         index_mask = index_mask.unsqueeze(1)  # [B, 1, S, T]
-        if attention_mask is not None:
-            causal_mask = attention_mask[:, :, :, :total_len]
+        if attention_mask is not None and attention_mask.dim() == 4:
+            causal_mask = attention_mask[..., :total_len]
             combined_mask = index_mask + causal_mask
         else:
-            combined_mask = index_mask
+            combined_mask = (
+                attention_mask.masked_fill(index_mask == float("-inf"), float("-inf"))
+                if attention_mask is not None
+                else index_mask
+            )
 
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
             self.config._attn_implementation, eager_attention_forward
@@ -431,7 +435,7 @@ class GlmMoeDsaAttention(nn.Module):
             combined_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
-            indices=topk_indices,  # flash_mla_with_kvcache
+            topk_indices=topk_indices,  # Pass topk_indices for flash-mla sparse attention
             **kwargs,
         )
 
