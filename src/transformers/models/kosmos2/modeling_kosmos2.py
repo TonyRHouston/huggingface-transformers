@@ -1530,7 +1530,6 @@ class Kosmos2Model(Kosmos2PreTrainedModel):
             image_embeds = image_features.pooler_output
             projection_attentions = image_features.projection_attentions
 
-
         outputs = self.text_model(
             input_ids=input_ids,
             attention_mask=attention_mask,

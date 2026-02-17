@@ -838,6 +838,7 @@ class InformerEncoder(InformerPreTrainedModel):
         self.post_init()
 
     @capture_outputs
+    @auto_docstring
     def forward(
         self,
         attention_mask: torch.Tensor | None = None,

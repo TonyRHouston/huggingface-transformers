@@ -566,6 +566,7 @@ class Speech2TextEncoder(Speech2TextPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
+    @auto_docstring
     def forward(
         self,
         input_features,
@@ -658,6 +659,7 @@ class Speech2TextDecoder(Speech2TextPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
+    @auto_docstring
     def forward(
         self,
         input_ids=None,

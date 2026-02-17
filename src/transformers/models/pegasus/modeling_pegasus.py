@@ -505,6 +505,7 @@ class PegasusEncoder(PegasusPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
+    @auto_docstring
     def forward(
         self,
         input_ids=None,
@@ -630,6 +631,7 @@ class PegasusDecoder(PegasusPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
+    @auto_docstring
     def forward(
         self,
         input_ids=None,

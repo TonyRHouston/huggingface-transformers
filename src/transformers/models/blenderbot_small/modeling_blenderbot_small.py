@@ -444,6 +444,7 @@ class BlenderbotSmallEncoder(BlenderbotSmallPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
+    @auto_docstring
     def forward(
         self,
         input_ids=None,
@@ -538,6 +539,7 @@ class BlenderbotSmallDecoder(BlenderbotSmallPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
+    @auto_docstring
     def forward(
         self,
         input_ids=None,
