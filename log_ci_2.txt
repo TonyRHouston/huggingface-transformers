@@ -1,1199 +1,0 @@
-============================= test session starts ==============================
-platform linux -- Python 3.12.9, pytest-8.4.2, pluggy-1.6.0 -- /fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/bin/python
-cachedir: .pytest_cache
-hypothesis profile 'ci' -> database=None, deadline=None, print_blob=True, derandomize=True, suppress_health_check=(HealthCheck.too_slow,)
-rootdir: /fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep
-configfile: pyproject.toml
-plugins: rich-0.2.0, rerunfailures-15.1, timeout-2.4.0, hypothesis-6.148.7, anyio-4.12.1, order-1.3.0, xdist-3.8.0, asyncio-1.3.0
-asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
-collecting ... collected 253 items / 248 deselected / 5 selected
-
-tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_backward_direct FAILED [ 20%]
-tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_forward_direct FAILED [ 40%]
-tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_generation_direct FAILED [ 60%]
-tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_generation_with_conversion FAILED [ 80%]
-tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_plan_matches_params PASSED [100%]
-
-=================================== FAILURES ===================================
-___________________ MixtralModelTest.test_tp_backward_direct ___________________
-
-self = <tests.models.mixtral.test_modeling_mixtral.MixtralModelTest testMethod=test_tp_backward_direct>
-
-    def test_tp_backward_direct(self):
-        """Test TP backward pass with direct load path (no conversion mapping).
-    
-        Loading path: checkpoint → TP sharding → model
-        Applies to: Dense models (Llama, Mistral, etc.) where checkpoint format == model format
-        """
-        self._skip_if_not_supported()
-    
-        config = self.model_tester.get_config()
-        model_class = self._get_tp_model_class()
-        atol = self.tensor_parallel_atol
-        rtol = self.tensor_parallel_rtol
-    
-        # Save model to temp directory so we can load it with from_pretrained
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # Create and save a model with the test config
-            model = model_class(config)
-            model.save_pretrained(tmp_dir)
-    
->           _init_distributed(tp=self.tensor_parallel_size)(_test_tp_backward_impl)(
-                tmp_dir, model_class, atol, rtol
-            )
-
-tests/test_tensor_parallel_mixin.py:437: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-tests/test_tensor_parallel_mixin.py:102: in wrapper
-    mp.spawn(_global_wrapper, args=spawn_args, nprocs=world_size)
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:364: in spawn
-    return start_processes(fn, args, nprocs, join, daemon, start_method="spawn")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:320: in start_processes
-    while not context.join():
-              ^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-self = <torch.multiprocessing.spawn.ProcessContext object at 0x7f78bf715760>
-timeout = None, grace_period = None
-
-    def join(
-        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
-    ):
-        r"""Join one or more processes within spawn context.
-    
-        Attempt to join one or more processes in this spawn context.
-        If one of them exited with a non-zero exit status, this function
-        kills the remaining processes (optionally with a grace period)
-        and raises an exception with the cause of the first process exiting.
-    
-        Returns ``True`` if all processes have been joined successfully,
-        ``False`` if there are more processes that need to be joined.
-    
-        Args:
-            timeout (float): Wait this long (in seconds) before giving up on waiting.
-            grace_period (float): When any processes fail, wait this long (in seconds)
-                for others to shutdown gracefully before terminating them. If they
-                still don't exit, wait another grace period before killing them.
-        """
-        # Ensure this function can be called even when we're done.
-        if len(self.sentinels) == 0:
-            return True
-    
-        # Wait for any process to fail or all of them to succeed.
-        ready = multiprocessing.connection.wait(
-            self.sentinels.keys(),
-            timeout=timeout,
-        )
-    
-        error_index = None
-        for sentinel in ready:
-            index = self.sentinels.pop(sentinel)
-            process = self.processes[index]
-            process.join()
-            if process.exitcode != 0:
-                error_index = index
-                break
-    
-        # Return if there was no error.
-        if error_index is None:
-            # Return whether or not all processes have been joined.
-            return len(self.sentinels) == 0
-        # An error occurred. Clean-up all processes before returning.
-        # First, allow a grace period for processes to shutdown themselves.
-        if grace_period is not None:
-            self._join_procs_with_timeout(grace_period)
-        # Then, terminate processes that are still alive. Try SIGTERM first.
-        for process in self.processes:
-            if process.is_alive():
-                log.warning("Terminating process %s via signal SIGTERM", process.pid)
-                process.terminate()
-    
-        # Try SIGKILL if the process isn't going down after another grace_period.
-        # The reason is related to python signal handling is limited
-        # to main thread and if that is in c/c++ land and stuck it won't
-        # to handle it. We have seen processes getting stuck not handling
-        # SIGTERM for the above reason.
-        self._join_procs_with_timeout(30 if grace_period is None else grace_period)
-        for process in self.processes:
-            if process.is_alive():
-                log.warning(
-                    "Unable to shutdown process %s via SIGTERM , forcefully exiting via SIGKILL",
-                    process.pid,
-                )
-                process.kill()
-            process.join()
-    
-        # The file will only be created if the process crashed.
-        failed_process = self.processes[error_index]
-        if not os.access(self.error_files[error_index], os.R_OK):
-            exitcode = self.processes[error_index].exitcode
-            if exitcode < 0:
-                try:
-                    name = signal.Signals(-exitcode).name
-                except ValueError:
-                    name = f"<Unknown signal {-exitcode}>"
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with signal {name}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                    signal_name=name,
-                )
-            else:
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with exit code {exitcode:d}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                )
-    
-        with open(self.error_files[error_index], "rb") as fh:
-            original_trace = pickle.load(fh)
-        msg = f"\n\n-- Process {error_index:d} terminated with the following error:\n"
-        msg += original_trace
->       raise ProcessRaisedException(msg, error_index, failed_process.pid)
-E       torch.multiprocessing.spawn.ProcessRaisedException: 
-E       
-E       -- Process 1 terminated with the following error:
-E       Traceback (most recent call last):
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-E           fn(i, *args)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-E           func(rank, *func_args, **func_kwargs)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 186, in _test_tp_backward_impl
-E           model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-E                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-E           model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-E           loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-E                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-E           log_state_dict_report(
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-E           raise RuntimeError(
-E       RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:220: ProcessRaisedException
------------------------------ Captured stdout call -----------------------------
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
------------------------------ Captured stderr call -----------------------------
-Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 423.32it/s]
-Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 14217.98it/s, Materializing param=lm_head.weight]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 6636.56it/s, Materializing param=lm_head.weight] Loading weights:  10%|▉         | 2/21 [00:00<00:00, 6770.47it/s, Materializing param=model.embed_tokens.weight]Loading weights:  10%|▉         | 2/21 [00:00<00:00, 5675.65it/s, Materializing param=model.embed_tokens.weight]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 6526.41it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 5822.73it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 282.75it/s, Materializing param=model.layers.0.mlp.experts.down_proj]    Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 281.09it/s, Materializing param=model.layers.0.mlp.experts.down_proj]Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 330.31it/s, Materializing param=model.layers.0.mlp.gate.weight]      Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 327.05it/s, Materializing param=model.layers.0.mlp.gate.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 387.36it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 385.78it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 445.09it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 442.88it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 502.73it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]        Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 499.65it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 558.12it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 556.31it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 614.32it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 612.41it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 669.67it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 667.58it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 724.15it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 721.09it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 765.52it/s, Materializing param=model.layers.1.mlp.experts.down_proj]   Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 762.73it/s, Materializing param=model.layers.1.mlp.experts.down_proj]Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 807.16it/s, Materializing param=model.layers.1.mlp.gate.weight]      Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 804.44it/s, Materializing param=model.layers.1.mlp.gate.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 856.76it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 854.16it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 905.73it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 903.00it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  81%|████████  | 17/21 [00:00<00:00, 954.57it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]        Loading weights:  81%|████████  | 17/21 [00:00<00:00, 951.84it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 1002.52it/s, Materializing param=model.layers.1.self_attn.o_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 999.71it/s, Materializing param=model.layers.1.self_attn.o_proj.weight] Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 1049.83it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 1046.95it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 1096.45it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 1093.53it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1142.55it/s, Materializing param=model.norm.weight]                     Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1139.65it/s, Materializing param=model.norm.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1132.94it/s, Materializing param=model.norm.weight]
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmpo_cice8p
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmpo_cice8p
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[rank0]:[W205 11:02:27.729714984 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
-W0205 11:02:27.751000 315188 torch/multiprocessing/spawn.py:174] Terminating process 315539 via signal SIGTERM
-___________________ MixtralModelTest.test_tp_forward_direct ____________________
-
-self = <tests.models.mixtral.test_modeling_mixtral.MixtralModelTest testMethod=test_tp_forward_direct>
-
-    def test_tp_forward_direct(self):
-        """Test TP forward pass with direct load path (no conversion mapping).
-    
-        Loading path: checkpoint → TP sharding → model
-        Applies to: Dense models (Llama, Mistral, etc.) where checkpoint format == model format
-        """
-        self._skip_if_not_supported()
-    
-        config = self.model_tester.get_config()
-        model_class = self._get_tp_model_class()
-        atol = self.tensor_parallel_atol
-        rtol = self.tensor_parallel_rtol
-    
-        # Save model to temp directory so we can load it with from_pretrained
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # Create and save a model with the test config
-            model = model_class(config)
-            model.save_pretrained(tmp_dir)
-    
->           _init_distributed(tp=self.tensor_parallel_size)(_test_tp_forward_impl)(
-                tmp_dir, model_class, atol, rtol
-            )
-
-tests/test_tensor_parallel_mixin.py:414: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-tests/test_tensor_parallel_mixin.py:102: in wrapper
-    mp.spawn(_global_wrapper, args=spawn_args, nprocs=world_size)
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:364: in spawn
-    return start_processes(fn, args, nprocs, join, daemon, start_method="spawn")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:320: in start_processes
-    while not context.join():
-              ^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-self = <torch.multiprocessing.spawn.ProcessContext object at 0x7f78bf715dc0>
-timeout = None, grace_period = None
-
-    def join(
-        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
-    ):
-        r"""Join one or more processes within spawn context.
-    
-        Attempt to join one or more processes in this spawn context.
-        If one of them exited with a non-zero exit status, this function
-        kills the remaining processes (optionally with a grace period)
-        and raises an exception with the cause of the first process exiting.
-    
-        Returns ``True`` if all processes have been joined successfully,
-        ``False`` if there are more processes that need to be joined.
-    
-        Args:
-            timeout (float): Wait this long (in seconds) before giving up on waiting.
-            grace_period (float): When any processes fail, wait this long (in seconds)
-                for others to shutdown gracefully before terminating them. If they
-                still don't exit, wait another grace period before killing them.
-        """
-        # Ensure this function can be called even when we're done.
-        if len(self.sentinels) == 0:
-            return True
-    
-        # Wait for any process to fail or all of them to succeed.
-        ready = multiprocessing.connection.wait(
-            self.sentinels.keys(),
-            timeout=timeout,
-        )
-    
-        error_index = None
-        for sentinel in ready:
-            index = self.sentinels.pop(sentinel)
-            process = self.processes[index]
-            process.join()
-            if process.exitcode != 0:
-                error_index = index
-                break
-    
-        # Return if there was no error.
-        if error_index is None:
-            # Return whether or not all processes have been joined.
-            return len(self.sentinels) == 0
-        # An error occurred. Clean-up all processes before returning.
-        # First, allow a grace period for processes to shutdown themselves.
-        if grace_period is not None:
-            self._join_procs_with_timeout(grace_period)
-        # Then, terminate processes that are still alive. Try SIGTERM first.
-        for process in self.processes:
-            if process.is_alive():
-                log.warning("Terminating process %s via signal SIGTERM", process.pid)
-                process.terminate()
-    
-        # Try SIGKILL if the process isn't going down after another grace_period.
-        # The reason is related to python signal handling is limited
-        # to main thread and if that is in c/c++ land and stuck it won't
-        # to handle it. We have seen processes getting stuck not handling
-        # SIGTERM for the above reason.
-        self._join_procs_with_timeout(30 if grace_period is None else grace_period)
-        for process in self.processes:
-            if process.is_alive():
-                log.warning(
-                    "Unable to shutdown process %s via SIGTERM , forcefully exiting via SIGKILL",
-                    process.pid,
-                )
-                process.kill()
-            process.join()
-    
-        # The file will only be created if the process crashed.
-        failed_process = self.processes[error_index]
-        if not os.access(self.error_files[error_index], os.R_OK):
-            exitcode = self.processes[error_index].exitcode
-            if exitcode < 0:
-                try:
-                    name = signal.Signals(-exitcode).name
-                except ValueError:
-                    name = f"<Unknown signal {-exitcode}>"
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with signal {name}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                    signal_name=name,
-                )
-            else:
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with exit code {exitcode:d}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                )
-    
-        with open(self.error_files[error_index], "rb") as fh:
-            original_trace = pickle.load(fh)
-        msg = f"\n\n-- Process {error_index:d} terminated with the following error:\n"
-        msg += original_trace
->       raise ProcessRaisedException(msg, error_index, failed_process.pid)
-E       torch.multiprocessing.spawn.ProcessRaisedException: 
-E       
-E       -- Process 1 terminated with the following error:
-E       Traceback (most recent call last):
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-E           fn(i, *args)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-E           func(rank, *func_args, **func_kwargs)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 161, in _test_tp_forward_impl
-E           model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-E                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-E           model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-E           loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-E                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-E           log_state_dict_report(
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-E           raise RuntimeError(
-E       RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:220: ProcessRaisedException
------------------------------ Captured stdout call -----------------------------
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
------------------------------ Captured stderr call -----------------------------
-Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 472.28it/s]
-Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 17331.83it/s, Materializing param=lm_head.weight]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 7503.23it/s, Materializing param=lm_head.weight] Loading weights:  10%|▉         | 2/21 [00:00<00:00, 7832.50it/s, Materializing param=model.embed_tokens.weight]Loading weights:  10%|▉         | 2/21 [00:00<00:00, 6418.22it/s, Materializing param=model.embed_tokens.weight]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 7298.67it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 6442.86it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 143.62it/s, Materializing param=model.layers.0.mlp.experts.down_proj]    Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 143.18it/s, Materializing param=model.layers.0.mlp.experts.down_proj]Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 176.30it/s, Materializing param=model.layers.0.mlp.gate.weight]      Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 175.82it/s, Materializing param=model.layers.0.mlp.gate.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 209.99it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 209.51it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 243.50it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 243.01it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 276.82it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]        Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 276.34it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 309.83it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 309.28it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 342.56it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 341.99it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 375.02it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 374.41it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 407.19it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 406.53it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 435.58it/s, Materializing param=model.layers.1.mlp.experts.down_proj]   Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 434.72it/s, Materializing param=model.layers.1.mlp.experts.down_proj]Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 463.25it/s, Materializing param=model.layers.1.mlp.gate.weight]      Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 462.33it/s, Materializing param=model.layers.1.mlp.gate.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 493.70it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 492.88it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 524.01it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 523.14it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  81%|████████  | 17/21 [00:00<00:00, 554.29it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]        Loading weights:  81%|████████  | 17/21 [00:00<00:00, 553.44it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 584.35it/s, Materializing param=model.layers.1.self_attn.o_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 583.44it/s, Materializing param=model.layers.1.self_attn.o_proj.weight]Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 614.12it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 613.22it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 643.73it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 642.77it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 673.06it/s, Materializing param=model.norm.weight]                     Loading weights: 100%|██████████| 21/21 [00:00<00:00, 672.10it/s, Materializing param=model.norm.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 669.94it/s, Materializing param=model.norm.weight]
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmp32chj3in
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmp32chj3in
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[rank0]:[W205 11:02:47.494342613 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
-W0205 11:02:48.517000 315188 torch/multiprocessing/spawn.py:174] Terminating process 315688 via signal SIGTERM
-__________________ MixtralModelTest.test_tp_generation_direct __________________
-
-self = <tests.models.mixtral.test_modeling_mixtral.MixtralModelTest testMethod=test_tp_generation_direct>
-
-    def test_tp_generation_direct(self):
-        """Test TP generation with direct load path (no conversion mapping).
-    
-        Loading path: checkpoint → TP sharding → model → generate
-        Applies to: Dense models (Llama, Mistral, etc.) where checkpoint format == model format
-        """
-        self._skip_if_not_supported()
-    
-        config = self.model_tester.get_config()
-        model_class = self._get_tp_model_class()
-        atol = self.tensor_parallel_atol
-        rtol = self.tensor_parallel_rtol
-        max_new_tokens = 10
-    
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            model = model_class(config)
-            model.save_pretrained(tmp_dir)
-    
->           _init_distributed(tp=self.tensor_parallel_size)(_test_tp_generation_impl)(
-                tmp_dir, model_class, atol, rtol, max_new_tokens
-            )
-
-tests/test_tensor_parallel_mixin.py:459: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-tests/test_tensor_parallel_mixin.py:102: in wrapper
-    mp.spawn(_global_wrapper, args=spawn_args, nprocs=world_size)
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:364: in spawn
-    return start_processes(fn, args, nprocs, join, daemon, start_method="spawn")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:320: in start_processes
-    while not context.join():
-              ^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-self = <torch.multiprocessing.spawn.ProcessContext object at 0x7f78bf78aed0>
-timeout = None, grace_period = None
-
-    def join(
-        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
-    ):
-        r"""Join one or more processes within spawn context.
-    
-        Attempt to join one or more processes in this spawn context.
-        If one of them exited with a non-zero exit status, this function
-        kills the remaining processes (optionally with a grace period)
-        and raises an exception with the cause of the first process exiting.
-    
-        Returns ``True`` if all processes have been joined successfully,
-        ``False`` if there are more processes that need to be joined.
-    
-        Args:
-            timeout (float): Wait this long (in seconds) before giving up on waiting.
-            grace_period (float): When any processes fail, wait this long (in seconds)
-                for others to shutdown gracefully before terminating them. If they
-                still don't exit, wait another grace period before killing them.
-        """
-        # Ensure this function can be called even when we're done.
-        if len(self.sentinels) == 0:
-            return True
-    
-        # Wait for any process to fail or all of them to succeed.
-        ready = multiprocessing.connection.wait(
-            self.sentinels.keys(),
-            timeout=timeout,
-        )
-    
-        error_index = None
-        for sentinel in ready:
-            index = self.sentinels.pop(sentinel)
-            process = self.processes[index]
-            process.join()
-            if process.exitcode != 0:
-                error_index = index
-                break
-    
-        # Return if there was no error.
-        if error_index is None:
-            # Return whether or not all processes have been joined.
-            return len(self.sentinels) == 0
-        # An error occurred. Clean-up all processes before returning.
-        # First, allow a grace period for processes to shutdown themselves.
-        if grace_period is not None:
-            self._join_procs_with_timeout(grace_period)
-        # Then, terminate processes that are still alive. Try SIGTERM first.
-        for process in self.processes:
-            if process.is_alive():
-                log.warning("Terminating process %s via signal SIGTERM", process.pid)
-                process.terminate()
-    
-        # Try SIGKILL if the process isn't going down after another grace_period.
-        # The reason is related to python signal handling is limited
-        # to main thread and if that is in c/c++ land and stuck it won't
-        # to handle it. We have seen processes getting stuck not handling
-        # SIGTERM for the above reason.
-        self._join_procs_with_timeout(30 if grace_period is None else grace_period)
-        for process in self.processes:
-            if process.is_alive():
-                log.warning(
-                    "Unable to shutdown process %s via SIGTERM , forcefully exiting via SIGKILL",
-                    process.pid,
-                )
-                process.kill()
-            process.join()
-    
-        # The file will only be created if the process crashed.
-        failed_process = self.processes[error_index]
-        if not os.access(self.error_files[error_index], os.R_OK):
-            exitcode = self.processes[error_index].exitcode
-            if exitcode < 0:
-                try:
-                    name = signal.Signals(-exitcode).name
-                except ValueError:
-                    name = f"<Unknown signal {-exitcode}>"
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with signal {name}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                    signal_name=name,
-                )
-            else:
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with exit code {exitcode:d}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                )
-    
-        with open(self.error_files[error_index], "rb") as fh:
-            original_trace = pickle.load(fh)
-        msg = f"\n\n-- Process {error_index:d} terminated with the following error:\n"
-        msg += original_trace
->       raise ProcessRaisedException(msg, error_index, failed_process.pid)
-E       torch.multiprocessing.spawn.ProcessRaisedException: 
-E       
-E       -- Process 1 terminated with the following error:
-E       Traceback (most recent call last):
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-E           fn(i, *args)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-E           func(rank, *func_args, **func_kwargs)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 239, in _test_tp_generation_impl
-E           model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-E                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-E           model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-E           loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-E                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-E           log_state_dict_report(
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-E           raise RuntimeError(
-E       RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:220: ProcessRaisedException
------------------------------ Captured stdout call -----------------------------
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
------------------------------ Captured stderr call -----------------------------
-Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 462.03it/s]
-Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 14614.30it/s, Materializing param=lm_head.weight]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 7002.18it/s, Materializing param=lm_head.weight] Loading weights:  10%|▉         | 2/21 [00:00<00:00, 7449.92it/s, Materializing param=model.embed_tokens.weight]Loading weights:  10%|▉         | 2/21 [00:00<00:00, 6114.15it/s, Materializing param=model.embed_tokens.weight]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 6967.28it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 6186.29it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 307.22it/s, Materializing param=model.layers.0.mlp.experts.down_proj]    Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 303.86it/s, Materializing param=model.layers.0.mlp.experts.down_proj]Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 365.26it/s, Materializing param=model.layers.0.mlp.gate.weight]      Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 359.74it/s, Materializing param=model.layers.0.mlp.gate.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 419.45it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 414.35it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 476.54it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 474.29it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 537.77it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]        Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 535.35it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 597.02it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 594.95it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 656.82it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 654.68it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 714.33it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 711.52it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 771.45it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 769.02it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 815.91it/s, Materializing param=model.layers.1.mlp.experts.down_proj]   Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 812.81it/s, Materializing param=model.layers.1.mlp.experts.down_proj]Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 859.55it/s, Materializing param=model.layers.1.mlp.gate.weight]      Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 856.49it/s, Materializing param=model.layers.1.mlp.gate.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 911.87it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 909.01it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 963.53it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 960.54it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  81%|████████  | 17/21 [00:00<00:00, 1013.26it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]       Loading weights:  81%|████████  | 17/21 [00:00<00:00, 1010.26it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 1063.79it/s, Materializing param=model.layers.1.self_attn.o_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 1060.72it/s, Materializing param=model.layers.1.self_attn.o_proj.weight]Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 1113.46it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 1110.28it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 1162.48it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 1159.27it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1210.96it/s, Materializing param=model.norm.weight]                     Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1207.84it/s, Materializing param=model.norm.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1200.15it/s, Materializing param=model.norm.weight]
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmpjuc7gpqa
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmpjuc7gpqa
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[rank0]:[W205 11:03:08.921929287 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
-_____________ MixtralModelTest.test_tp_generation_with_conversion ______________
-
-self = <tests.models.mixtral.test_modeling_mixtral.MixtralModelTest testMethod=test_tp_generation_with_conversion>
-
-    def test_tp_generation_with_conversion(self):
-        """Test TP generation with conversion mapping path (MoE weight fusion).
-    
-        Loading path: original checkpoint → conversion mapping → TP sharding → model → generate
-        Applies to: MoE models (Mixtral, Qwen2-MoE, etc.) where checkpoint has unfused experts
-    
-        This test creates a checkpoint in the original format (e.g., separate expert weights
-        like w1/w3/w2 for Mixtral) and verifies that loading with tp_plan="auto" correctly
-        applies the conversion mapping to fuse weights during tensor parallel loading.
-        """
-        self._skip_if_not_supported()
-    
-        # Only run for models with conversion mapping (e.g., MoE models like Mixtral, Qwen2-MoE)
-        # These models have checkpoint weights in unfused format that need conversion during loading
-        config = self.model_tester.get_config()
-        model_type = getattr(config, "model_type", None)
-        if model_type not in _MODEL_TO_CONVERSION_PATTERN:
-            self.skipTest(f"Model type {model_type} has no conversion mapping defined")
-    
-        model_class = self._get_tp_model_class()
-        atol = self.tensor_parallel_atol
-        rtol = self.tensor_parallel_rtol
-        max_new_tokens = 10
-    
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # Create model and save in original (unfused) format using native reversal logic
-            # This simulates loading from an original checkpoint (e.g., from HuggingFace Hub)
-            from safetensors.torch import save_file
-    
-            from transformers.core_model_loading import revert_weight_conversion
-    
-            # Step 1: Create model with fused weights (internal representation)
-            model = model_class(config)
-            # Step 2: Get the current state dict (fused format)
-            state_dict = model.state_dict()
-            # Step 3: Revert to unfused format (simulates original checkpoint format, e.g., w1/w3/w2 separate)
-            original_state_dict = revert_weight_conversion(model, state_dict)
-            # Step 4: Save checkpoint files in the original unfused format
-            save_file(original_state_dict, os.path.join(tmp_dir, "model.safetensors"))
-            model.config.save_pretrained(tmp_dir)
-    
-            # Execute the distributed test: loads the unfused checkpoint with tp_plan="auto"
-            # and verifies that conversion mapping is correctly applied during TP loading
->           _init_distributed(tp=self.tensor_parallel_size)(_test_tp_generation_with_conversion_impl)(
-                tmp_dir, model_class, atol, rtol, max_new_tokens
-            )
-
-tests/test_tensor_parallel_mixin.py:509: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-tests/test_tensor_parallel_mixin.py:102: in wrapper
-    mp.spawn(_global_wrapper, args=spawn_args, nprocs=world_size)
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:364: in spawn
-    return start_processes(fn, args, nprocs, join, daemon, start_method="spawn")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:320: in start_processes
-    while not context.join():
-              ^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-self = <torch.multiprocessing.spawn.ProcessContext object at 0x7f78bf78c1d0>
-timeout = None, grace_period = None
-
-    def join(
-        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
-    ):
-        r"""Join one or more processes within spawn context.
-    
-        Attempt to join one or more processes in this spawn context.
-        If one of them exited with a non-zero exit status, this function
-        kills the remaining processes (optionally with a grace period)
-        and raises an exception with the cause of the first process exiting.
-    
-        Returns ``True`` if all processes have been joined successfully,
-        ``False`` if there are more processes that need to be joined.
-    
-        Args:
-            timeout (float): Wait this long (in seconds) before giving up on waiting.
-            grace_period (float): When any processes fail, wait this long (in seconds)
-                for others to shutdown gracefully before terminating them. If they
-                still don't exit, wait another grace period before killing them.
-        """
-        # Ensure this function can be called even when we're done.
-        if len(self.sentinels) == 0:
-            return True
-    
-        # Wait for any process to fail or all of them to succeed.
-        ready = multiprocessing.connection.wait(
-            self.sentinels.keys(),
-            timeout=timeout,
-        )
-    
-        error_index = None
-        for sentinel in ready:
-            index = self.sentinels.pop(sentinel)
-            process = self.processes[index]
-            process.join()
-            if process.exitcode != 0:
-                error_index = index
-                break
-    
-        # Return if there was no error.
-        if error_index is None:
-            # Return whether or not all processes have been joined.
-            return len(self.sentinels) == 0
-        # An error occurred. Clean-up all processes before returning.
-        # First, allow a grace period for processes to shutdown themselves.
-        if grace_period is not None:
-            self._join_procs_with_timeout(grace_period)
-        # Then, terminate processes that are still alive. Try SIGTERM first.
-        for process in self.processes:
-            if process.is_alive():
-                log.warning("Terminating process %s via signal SIGTERM", process.pid)
-                process.terminate()
-    
-        # Try SIGKILL if the process isn't going down after another grace_period.
-        # The reason is related to python signal handling is limited
-        # to main thread and if that is in c/c++ land and stuck it won't
-        # to handle it. We have seen processes getting stuck not handling
-        # SIGTERM for the above reason.
-        self._join_procs_with_timeout(30 if grace_period is None else grace_period)
-        for process in self.processes:
-            if process.is_alive():
-                log.warning(
-                    "Unable to shutdown process %s via SIGTERM , forcefully exiting via SIGKILL",
-                    process.pid,
-                )
-                process.kill()
-            process.join()
-    
-        # The file will only be created if the process crashed.
-        failed_process = self.processes[error_index]
-        if not os.access(self.error_files[error_index], os.R_OK):
-            exitcode = self.processes[error_index].exitcode
-            if exitcode < 0:
-                try:
-                    name = signal.Signals(-exitcode).name
-                except ValueError:
-                    name = f"<Unknown signal {-exitcode}>"
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with signal {name}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                    signal_name=name,
-                )
-            else:
-                raise ProcessExitedException(
-                    f"process {error_index:d} terminated with exit code {exitcode:d}",
-                    error_index=error_index,
-                    error_pid=failed_process.pid,
-                    exit_code=exitcode,
-                )
-    
-        with open(self.error_files[error_index], "rb") as fh:
-            original_trace = pickle.load(fh)
-        msg = f"\n\n-- Process {error_index:d} terminated with the following error:\n"
-        msg += original_trace
->       raise ProcessRaisedException(msg, error_index, failed_process.pid)
-E       torch.multiprocessing.spawn.ProcessRaisedException: 
-E       
-E       -- Process 1 terminated with the following error:
-E       Traceback (most recent call last):
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-E           fn(i, *args)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-E           func(rank, *func_args, **func_kwargs)
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 277, in _test_tp_generation_with_conversion_impl
-E           model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-E                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-E           model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-E           loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-E                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-E           log_state_dict_report(
-E         File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-E           raise RuntimeError(
-E       RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-
-../../env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py:220: ProcessRaisedException
------------------------------ Captured stdout call -----------------------------
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
-[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
------------------------------ Captured stderr call -----------------------------
-Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 15196.75it/s, Materializing param=lm_head.weight]Loading weights:   5%|▍         | 1/21 [00:00<00:00, 7281.78it/s, Materializing param=lm_head.weight] Loading weights:  10%|▉         | 2/21 [00:00<00:00, 7796.10it/s, Materializing param=model.embed_tokens.weight]Loading weights:  10%|▉         | 2/21 [00:00<00:00, 6413.31it/s, Materializing param=model.embed_tokens.weight]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 7328.43it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  14%|█▍        | 3/21 [00:00<00:00, 6466.04it/s, Materializing param=model.layers.0.mlp.experts.gate_up_proj]Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 292.23it/s, Materializing param=model.layers.0.mlp.experts.down_proj]    Loading weights:  19%|█▉        | 4/21 [00:00<00:00, 288.16it/s, Materializing param=model.layers.0.mlp.experts.down_proj]Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 345.07it/s, Materializing param=model.layers.0.mlp.gate.weight]      Loading weights:  24%|██▍       | 5/21 [00:00<00:00, 340.77it/s, Materializing param=model.layers.0.mlp.gate.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 403.89it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  29%|██▊       | 6/21 [00:00<00:00, 400.81it/s, Materializing param=model.layers.0.input_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 463.52it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  33%|███▎      | 7/21 [00:00<00:00, 459.67it/s, Materializing param=model.layers.0.post_attention_layernorm.weight]Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 520.59it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]        Loading weights:  38%|███▊      | 8/21 [00:00<00:00, 518.85it/s, Materializing param=model.layers.0.self_attn.k_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 579.88it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  43%|████▎     | 9/21 [00:00<00:00, 578.08it/s, Materializing param=model.layers.0.self_attn.o_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 638.48it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  48%|████▊     | 10/21 [00:00<00:00, 636.58it/s, Materializing param=model.layers.0.self_attn.q_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 696.29it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  52%|█████▏    | 11/21 [00:00<00:00, 694.20it/s, Materializing param=model.layers.0.self_attn.v_proj.weight]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 752.42it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  57%|█████▋    | 12/21 [00:00<00:00, 750.09it/s, Materializing param=model.layers.1.mlp.experts.gate_up_proj]Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 796.98it/s, Materializing param=model.layers.1.mlp.experts.down_proj]   Loading weights:  62%|██████▏   | 13/21 [00:00<00:00, 794.12it/s, Materializing param=model.layers.1.mlp.experts.down_proj]Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 840.35it/s, Materializing param=model.layers.1.mlp.gate.weight]      Loading weights:  67%|██████▋   | 14/21 [00:00<00:00, 837.48it/s, Materializing param=model.layers.1.mlp.gate.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 891.86it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  71%|███████▏  | 15/21 [00:00<00:00, 889.19it/s, Materializing param=model.layers.1.input_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 943.45it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  76%|███████▌  | 16/21 [00:00<00:00, 940.19it/s, Materializing param=model.layers.1.post_attention_layernorm.weight]Loading weights:  81%|████████  | 17/21 [00:00<00:00, 993.61it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]        Loading weights:  81%|████████  | 17/21 [00:00<00:00, 990.83it/s, Materializing param=model.layers.1.self_attn.k_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 1043.66it/s, Materializing param=model.layers.1.self_attn.o_proj.weight]Loading weights:  86%|████████▌ | 18/21 [00:00<00:00, 1039.48it/s, Materializing param=model.layers.1.self_attn.o_proj.weight]Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 1091.37it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  90%|█████████ | 19/21 [00:00<00:00, 1088.31it/s, Materializing param=model.layers.1.self_attn.q_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 1139.77it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights:  95%|█████████▌| 20/21 [00:00<00:00, 1136.73it/s, Materializing param=model.layers.1.self_attn.v_proj.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1187.69it/s, Materializing param=model.norm.weight]                     Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1184.62it/s, Materializing param=model.norm.weight]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1177.53it/s, Materializing param=model.norm.weight]
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmp08awjcv2
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-stack expects each tensor to be equal size, but got [] at entry 0 and [32, 32] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[1mMixtralForCausalLM LOAD REPORT[0m from: /tmp/tmp08awjcv2
-Key                                          | Status     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
----------------------------------------------+------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-model.layers.{0, 1}.mlp.experts.gate_up_proj | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.down_proj    | MISSING    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-model.layers.{0, 1}.mlp.experts.gate_up_proj | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.gate_up_proj. Ckpt contains: 2
-
-
-model.layers.{0, 1}.mlp.experts.down_proj    | CONVERSION | 
-
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 832, in log_conversion_errors
-    yield
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 724, in convert
-    collected_tensors = op.convert(
-                        ^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/core_model_loading.py", line 188, in convert
-    merged[target_pattern] = torch.stack([k for k in tensors if k is not None], dim=self.dim)
-                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-RuntimeError: stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-stack expects each tensor to be equal size, but got [32, 32] at entry 0 and [] at entry 4
-Error: MergeModulelist on tensors destined for model.layers.1.mlp.experts.down_proj. Ckpt contains: 1
-
-   
-
-[3mNotes:
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
-- CONVERSION[3m	:originate from the conversion scheme[0m
-[rank0]:[W205 11:03:28.844380593 ProcessGroupNCCL.cpp:1524] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
-W0205 11:03:28.864000 315188 torch/multiprocessing/spawn.py:174] Terminating process 316035 via signal SIGTERM
-=============================== warnings summary ===============================
-../../env_main/lib/python3.12/site-packages/_pytest/config/__init__.py:1474
-  /fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/_pytest/config/__init__.py:1474: PytestConfigWarning: Unknown config option: env
-  
-    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_backward_direct - torch.multiprocessing.spawn.ProcessRaisedException: 
-
--- Process 1 terminated with the following error:
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-    fn(i, *args)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-    func(rank, *func_args, **func_kwargs)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 186, in _test_tp_backward_impl
-    model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-    model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-    loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-    log_state_dict_report(
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-    raise RuntimeError(
-RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-FAILED tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_forward_direct - torch.multiprocessing.spawn.ProcessRaisedException: 
-
--- Process 1 terminated with the following error:
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-    fn(i, *args)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-    func(rank, *func_args, **func_kwargs)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 161, in _test_tp_forward_impl
-    model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-    model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-    loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-    log_state_dict_report(
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-    raise RuntimeError(
-RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-FAILED tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_generation_direct - torch.multiprocessing.spawn.ProcessRaisedException: 
-
--- Process 1 terminated with the following error:
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-    fn(i, *args)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-    func(rank, *func_args, **func_kwargs)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 239, in _test_tp_generation_impl
-    model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-    model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-    loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-    log_state_dict_report(
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-    raise RuntimeError(
-RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-FAILED tests/models/mixtral/test_modeling_mixtral.py::MixtralModelTest::test_tp_generation_with_conversion - torch.multiprocessing.spawn.ProcessRaisedException: 
-
--- Process 1 terminated with the following error:
-Traceback (most recent call last):
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/env_main/lib/python3.12/site-packages/torch/multiprocessing/spawn.py", line 95, in _wrap
-    fn(i, *args)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 88, in _global_wrapper
-    func(rank, *func_args, **func_kwargs)
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 277, in _test_tp_generation_with_conversion_impl
-    model_tp, model, device = _load_tp_and_reference_models(model_path, model_class)
-                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/tests/test_tensor_parallel_mixin.py", line 115, in _load_tp_and_reference_models
-    model_tp = model_class.from_pretrained(model_path, tp_plan="auto")
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4077, in from_pretrained
-    loading_info = cls._finalize_model_loading(model, load_config, loading_info)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/modeling_utils.py", line 4238, in _finalize_model_loading
-    log_state_dict_report(
-  File "/fsx/ferdinandmom/ferdinand-hf/transformers_pr/work/fix-moe-ep/src/transformers/utils/loading_report.py", line 273, in log_state_dict_report
-    raise RuntimeError(
-RuntimeError: We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of the above report!
-====== 4 failed, 1 passed, 248 deselected, 1 warning in 89.84s (0:01:29) =======
