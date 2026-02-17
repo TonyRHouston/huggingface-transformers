@@ -628,7 +628,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["GlmMoeDsaDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = False  # flash-mla kernels need a bit more work in the way we enable them!
+    _supports_flash_attn = True  # flash-mla kernels need a bit more work in the way we enable them!
     _supports_sdpa = True
     _supports_flex_attn = False
     _can_compile_fullgraph = (
