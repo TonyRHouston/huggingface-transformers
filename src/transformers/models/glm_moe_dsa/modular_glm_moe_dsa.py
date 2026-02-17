@@ -499,11 +499,10 @@ class GlmMoeDsaAttention(nn.Module):
         past_key_values: Cache | None = None,
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch_size, seq_length = hidden_states.shape[:-1]
         cos, sin = position_embeddings
 
-        # ===== Query path =====
         if self.q_lora_rank is None:
             query_states = self.q_proj(hidden_states)
             q_resid = None
@@ -515,7 +514,6 @@ class GlmMoeDsaAttention(nn.Module):
         q_nope, q_pe = torch.split(query_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
         q_pe = apply_rotary_pos_emb(q_pe, cos, sin, unsqueeze_dim=1)  # BHSD format
 
-        # ===== KV path =====
         compressed_kv = self.kv_a_proj_with_mqa(hidden_states)  # [B, S, kv_rank + rope_D]
         k_compressed, k_pe = torch.split(compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
         k_compressed = self.kv_a_layernorm(k_compressed)  # [B, S, kv_rank]
@@ -543,7 +541,6 @@ class GlmMoeDsaAttention(nn.Module):
                 key_states, value_states, self.layer_idx, cache_kwargs
             )
 
-        # ===== Indexer (DSA sparse mask) =====
         # attention_mask is [B, 1, S, T] (4D) for eager and (2D) otherwise but indexer works with [B, S, T] (3D)
         indexer_mask = (
             attention_mask[:, 0, :, :]
@@ -613,13 +610,6 @@ class GlmMoeDsaPreTrainedModel(Glm4MoePreTrainedModel):
     _supports_flash_attn = False  # flash-mla kernels need a bit more work in the way we enable them!
     _supports_sdpa = True
     _supports_flex_attn = False
-
-    @torch.no_grad()
-    def _init_weights(self, module):
-        # Skip normal_ initialization for FP8 quantized weights which don't support it
-        if isinstance(module, nn.Linear) and hasattr(module, "weight") and module.weight.dtype == torch.float8_e4m3fn:
-            return
-        super()._init_weights(module)
 
 
 class GlmMoeDsaModel(Glm4MoeModel):
