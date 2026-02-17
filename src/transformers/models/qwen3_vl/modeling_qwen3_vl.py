@@ -1519,14 +1519,8 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
         if (cache := model_kwargs.get("past_key_values")) is not None:
             past_length = cache.get_seq_length()
         if past_length != 0 and self.model.rope_deltas is not None:
-            # Use arange-based positions instead of cumsum. The parent's cumsum already accounts for padding
-            # via the attention mask, so adding rope_deltas (which also encodes padding offset) would
-            # double-correct. arange gives raw indices where rope_deltas is the correct adjustment.
-            seq_length = text_positions.shape[-1]
-            batch_size = text_positions.shape[0]
-            position_ids = torch.arange(seq_length, device=text_positions.device)
-            position_ids = position_ids.view(1, 1, -1).expand(4, batch_size, -1) + self.model.rope_deltas
-            return position_ids.clamp(min=0)
+            # No need to add rope_deltas because the positions already account for padding
+            return text_positions[None, ...].expand(4, -1, -1)
 
         # Otherwise compute 3d position ids for vision tokens and concat with text position ids
         if "input_ids" in model_kwargs and model_kwargs["input_ids"].shape[1] > 0:
