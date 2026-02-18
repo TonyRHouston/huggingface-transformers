@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import sys
+import threading
 from contextlib import contextmanager
 
 from .utils import is_torch_available, logging
@@ -26,6 +27,7 @@ logger = logging.get_logger(__name__)
 
 
 _monkey_patch_mapping_cache: dict[str, type[nn.Module]] = {}
+_monkey_patch_lock = threading.Lock()
 
 
 def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite: bool = False) -> None:
@@ -70,12 +72,24 @@ def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite
         For weight conversions, use [`~transformers.register_checkpoint_conversion_mapping`] instead.
     """
     global _monkey_patch_mapping_cache
-    for class_name, replacement_class in mapping.items():
-        if class_name in _monkey_patch_mapping_cache and not overwrite:
-            raise ValueError(
-                f"Class '{class_name}' already has a patch mapping registered. Use overwrite=True to replace it."
-            )
-        _monkey_patch_mapping_cache[class_name] = replacement_class
+    with _monkey_patch_lock:
+        for class_name, replacement_class in mapping.items():
+            # Validate that replacement_class is actually a class and is a subclass of nn.Module
+            if not isinstance(replacement_class, type):
+                raise TypeError(
+                    f"Replacement for '{class_name}' must be a class, got {type(replacement_class).__name__}"
+                )
+            if not issubclass(replacement_class, nn.Module):
+                raise TypeError(
+                    f"Replacement class for '{class_name}' must be a subclass of nn.Module, "
+                    f"got {replacement_class.__name__} which inherits from {[c.__name__ for c in replacement_class.__mro__[1:]]}"
+                )
+
+            if class_name in _monkey_patch_mapping_cache and not overwrite:
+                raise ValueError(
+                    f"Class '{class_name}' already has a patch mapping registered. Use overwrite=True to replace it."
+                )
+            _monkey_patch_mapping_cache[class_name] = replacement_class
 
 
 def unregister_monkey_patch_mapping(class_names: list[str]) -> None:
@@ -106,11 +120,12 @@ def unregister_monkey_patch_mapping(class_names: list[str]) -> None:
         ```
     """
     global _monkey_patch_mapping_cache
-    for class_name in class_names:
-        if class_name in _monkey_patch_mapping_cache:
-            del _monkey_patch_mapping_cache[class_name]
-        else:
-            logger.debug(f"Class '{class_name}' not found in monkey patch mapping cache. Skipping unregistration.")
+    with _monkey_patch_lock:
+        for class_name in class_names:
+            if class_name in _monkey_patch_mapping_cache:
+                del _monkey_patch_mapping_cache[class_name]
+            else:
+                logger.debug(f"Class '{class_name}' not found in monkey patch mapping cache. Skipping unregistration.")
 
 
 def get_monkey_patch_mapping() -> dict[str, type[nn.Module]]:
@@ -120,7 +135,8 @@ def get_monkey_patch_mapping() -> dict[str, type[nn.Module]]:
     Returns:
         `Dict[str, type[nn.Module]]`: The global class mapping dictionary.
     """
-    return _monkey_patch_mapping_cache
+    with _monkey_patch_lock:
+        return _monkey_patch_mapping_cache.copy()
 
 
 def clear_monkey_patch_mapping() -> None:
@@ -143,7 +159,8 @@ def clear_monkey_patch_mapping() -> None:
         ```
     """
     global _monkey_patch_mapping_cache
-    _monkey_patch_mapping_cache.clear()
+    with _monkey_patch_lock:
+        _monkey_patch_mapping_cache.clear()
 
 
 @contextmanager
@@ -179,12 +196,14 @@ def apply_monkey_patches():
         return
 
     original_classes = {}
-    for module_name, replacement_class in mapping.items():
-        for module in sys.modules.values():
-            if module.__name__.startswith("transformers") and hasattr(module, module_name):
-                original_class = getattr(module, module_name)
-                original_classes[(module.__name__, module_name)] = original_class
-                setattr(module, module_name, replacement_class)
+    for class_name, replacement_class in mapping.items():
+        # Create list to avoid dict changed during iteration
+        for module in list(sys.modules.values()):
+            if module is not None and hasattr(module, "__name__"):
+                if module.__name__.startswith("transformers") and hasattr(module, class_name):
+                    original_class = getattr(module, class_name)
+                    original_classes[(module.__name__, class_name)] = original_class
+                    setattr(module, class_name, replacement_class)
 
     yield
 
@@ -199,20 +218,50 @@ def patch_output_recorders(model: nn.Module) -> None:
     """
     Patch the model instance's output recorders to use the registered replacement classes.
 
+    This function updates output recorders in a model's submodules to use monkey-patched replacement
+    classes. Output recorders are used by the transformers library to track intermediate outputs during
+    forward passes (via the `_can_record_outputs` attribute). When classes are monkey-patched, these
+    recorders need to be updated to reference the new classes.
+
+    This is automatically called during model initialization when loading with `from_pretrained` or
+    `from_config`. You typically don't need to call this manually unless you're constructing models
+    in custom ways.
+
+    Note:
+        The `_can_record_outputs` attribute is a class-level attribute that maps output names to either:
+        - `OutputRecorder` instances that have a `target_class` attribute
+        - Class types directly
+
+        This function patches both cases to use the replacement classes from the monkey patch registry.
+
     Args:
         model (`nn.Module`):
-            The model instance whose output recorders should be patched.
+            The model instance whose output recorders should be patched. All submodules will be
+            traversed to find and patch their `_can_record_outputs` attributes.
+
+    Example:
+        ```python
+        from transformers import AutoModelForCausalLM, register_monkey_patch_mapping
+        from transformers.monkey_patch import patch_output_recorders
+
+        # Register a patch
+        register_monkey_patch_mapping(mapping={"Qwen2MoeExperts": CustomExperts})
+
+        # If you construct a model manually (without from_pretrained), patch recorders
+        model = Qwen2MoeModel(config)
+        patch_output_recorders(model)  # Updates output recorders to use CustomExperts
+        ```
     """
 
     mapping = get_monkey_patch_mapping()
     if not mapping:
         return
 
-    for module_name, replacement_class in mapping.items():
+    for class_name, replacement_class in mapping.items():
         for submodule in model.modules():
             if hasattr(submodule, "_can_record_outputs"):
                 for output, recorder in submodule._can_record_outputs.items():
-                    if isinstance(recorder, OutputRecorder) and recorder.target_class.__name__ == module_name:
+                    if isinstance(recorder, OutputRecorder) and recorder.target_class.__name__ == class_name:
                         recorder.target_class = replacement_class
-                    elif isinstance(recorder, type) and recorder.__name__ == module_name:
+                    elif isinstance(recorder, type) and recorder.__name__ == class_name:
                         submodule._can_record_outputs[output] = replacement_class
