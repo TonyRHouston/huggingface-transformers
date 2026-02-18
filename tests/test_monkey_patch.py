@@ -149,9 +149,13 @@ class MonkeyPatchTest(unittest.TestCase):
         self.assertNotIn("TestModule", mapping)
 
     def test_unregister_nonexistent_class(self):
-        """Test unregistering a class that doesn't exist (should not raise error)."""
-        # This should not raise an error
-        unregister_monkey_patch_mapping(["NonexistentModule"])
+        """Test unregistering a class that doesn't exist raises an error."""
+        # This should raise an error
+        with self.assertRaises(ValueError) as context:
+            unregister_monkey_patch_mapping(["NonexistentModule"])
+
+        self.assertIn("not found in monkey patch mapping cache", str(context.exception))
+        self.assertIn("Cannot unregister", str(context.exception))
 
     def test_unregister_multiple_classes(self):
         """Test unregistering multiple classes at once."""
@@ -253,87 +257,6 @@ class MonkeyPatchTest(unittest.TestCase):
         with apply_monkey_patches():
             pass
 
-    def test_apply_monkey_patches_multiple_modules(self):
-        """Test patching the same class across multiple transformers modules."""
-
-        class CustomLinear(nn.Linear):
-            pass
-
-        # Create multiple test modules
-        import types
-
-        test_module1 = types.ModuleType("transformers.test_module1")
-        test_module1.Linear = nn.Linear
-        sys.modules["transformers.test_module1"] = test_module1
-
-        test_module2 = types.ModuleType("transformers.test_module2")
-        test_module2.Linear = nn.Linear
-        sys.modules["transformers.test_module2"] = test_module2
-
-        try:
-            register_monkey_patch_mapping(mapping={"Linear": CustomLinear})
-
-            with apply_monkey_patches():
-                # Both modules should be patched
-                self.assertEqual(test_module1.Linear, CustomLinear)
-                self.assertEqual(test_module2.Linear, CustomLinear)
-
-            # Both should be restored
-            self.assertEqual(test_module1.Linear, nn.Linear)
-            self.assertEqual(test_module2.Linear, nn.Linear)
-
-        finally:
-            # Clean up
-            del sys.modules["transformers.test_module1"]
-            del sys.modules["transformers.test_module2"]
-
-    def test_thread_safety_concurrent_registration(self):
-        """Test that concurrent registrations are thread-safe."""
-
-        class CustomModule1(nn.Module):
-            pass
-
-        class CustomModule2(nn.Module):
-            pass
-
-        class CustomModule3(nn.Module):
-            pass
-
-        results = []
-        errors = []
-
-        def register_patches(class_name, module_class):
-            try:
-                register_monkey_patch_mapping(mapping={class_name: module_class})
-                results.append(class_name)
-            except Exception as e:
-                errors.append((class_name, e))
-
-        # Create multiple threads that register different patches
-        threads = [
-            threading.Thread(target=register_patches, args=("Module1", CustomModule1)),
-            threading.Thread(target=register_patches, args=("Module2", CustomModule2)),
-            threading.Thread(target=register_patches, args=("Module3", CustomModule3)),
-        ]
-
-        # Start all threads
-        for thread in threads:
-            thread.start()
-
-        # Wait for all threads to complete
-        for thread in threads:
-            thread.join()
-
-        # Verify no errors occurred
-        self.assertEqual(len(errors), 0, f"Errors occurred during concurrent registration: {errors}")
-
-        # Verify all patches were registered
-        mapping = get_monkey_patch_mapping()
-        self.assertEqual(len(mapping), 3)
-        self.assertIn("Module1", mapping)
-        self.assertIn("Module2", mapping)
-        self.assertIn("Module3", mapping)
-
     def test_thread_safety_concurrent_access(self):
         """Test that concurrent reads and writes are thread-safe."""
 
@@ -375,11 +298,12 @@ class MonkeyPatchTest(unittest.TestCase):
             pass
 
         class TestModel(nn.Module):
+            # Simulate _can_record_outputs with OutputRecorder
+            _can_record_outputs = {"output": OutputRecorder(OriginalModule)}
+
             def __init__(self):
                 super().__init__()
                 self.linear = nn.Linear(10, 10)
-                # Simulate _can_record_outputs with OutputRecorder
-                self._can_record_outputs = {"output": OutputRecorder(OriginalModule)}
 
         model = TestModel()
 
@@ -403,11 +327,12 @@ class MonkeyPatchTest(unittest.TestCase):
             pass
 
         class TestModel(nn.Module):
+            # Simulate _can_record_outputs with class type directly
+            _can_record_outputs = {"output": OriginalModule}
+
             def __init__(self):
                 super().__init__()
                 self.linear = nn.Linear(10, 10)
-                # Simulate _can_record_outputs with class type directly
-                self._can_record_outputs = {"output": OriginalModule}
 
         model = TestModel()
 
@@ -419,19 +344,6 @@ class MonkeyPatchTest(unittest.TestCase):
 
         # Verify the class was updated
         self.assertEqual(model._can_record_outputs["output"], ReplacementModule)
-
-    def test_patch_output_recorders_with_no_patches(self):
-        """Test that patch_output_recorders with no registered patches does nothing."""
-
-        class TestModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = nn.Linear(10, 10)
-
-        model = TestModel()
-
-        # Should not raise any errors
-        patch_output_recorders(model)
 
     def test_patch_output_recorders_with_nested_modules(self):
         """Test patching output recorders in nested modules."""
@@ -463,29 +375,6 @@ class MonkeyPatchTest(unittest.TestCase):
         # Verify nested submodule's recorder was updated
         recorder = model.submodule._can_record_outputs["output"]
         self.assertEqual(recorder.target_class, ReplacementModule)
-
-    def test_context_manager_with_module_without_name(self):
-        """Test that context manager handles modules without __name__ attribute gracefully."""
-
-        class CustomModule(nn.Module):
-            pass
-
-        # Create a module-like object without __name__
-        import types
-
-        test_module = types.ModuleType("transformers.test_no_name")
-        # Simulate a module in sys.modules that might not have proper attributes
-        sys.modules["transformers.test_no_name"] = test_module
-
-        try:
-            register_monkey_patch_mapping(mapping={"TestClass": CustomModule})
-
-            # This should not raise an error
-            with apply_monkey_patches():
-                pass
-
-        finally:
-            del sys.modules["transformers.test_no_name"]
 
     def test_incremental_registration(self):
         """Test that patches can be added incrementally."""

@@ -16,14 +16,12 @@ import sys
 import threading
 from contextlib import contextmanager
 
-from .utils import is_torch_available, logging
+from .utils import is_torch_available
 from .utils.output_capturing import OutputRecorder
 
 
 if is_torch_available():
     import torch.nn as nn
-
-logger = logging.get_logger(__name__)
 
 
 _monkey_patch_mapping_cache: dict[str, type[nn.Module]] = {}
@@ -124,10 +122,12 @@ def unregister_monkey_patch_mapping(class_names: list[str]) -> None:
     global _monkey_patch_mapping_cache
     with _monkey_patch_lock:
         for class_name in class_names:
-            if class_name in _monkey_patch_mapping_cache:
-                del _monkey_patch_mapping_cache[class_name]
-            else:
-                logger.debug(f"Class '{class_name}' not found in monkey patch mapping cache. Skipping unregistration.")
+            if class_name not in _monkey_patch_mapping_cache:
+                raise ValueError(
+                    f"Class '{class_name}' not found in monkey patch mapping cache. "
+                    f"Cannot unregister a class that is not registered."
+                )
+            del _monkey_patch_mapping_cache[class_name]
 
 
 def get_monkey_patch_mapping() -> dict[str, type[nn.Module]]:

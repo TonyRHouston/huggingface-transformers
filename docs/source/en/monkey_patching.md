@@ -384,12 +384,12 @@ model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen1.5-MoE-A2.7B")
 
 ## API reference
 
-[[autodoc]] register_monkey_patch_mapping
+[[autodoc]] transformers.monkey_patch.register_monkey_patch_mapping
 
-[[autodoc]] unregister_monkey_patch_mapping
+[[autodoc]] transformers.monkey_patch.unregister_monkey_patch_mapping
 
-[[autodoc]] clear_monkey_patch_mapping
+[[autodoc]] transformers.monkey_patch.clear_monkey_patch_mapping
 
-[[autodoc]] get_monkey_patch_mapping
+[[autodoc]] transformers.monkey_patch.get_monkey_patch_mapping
 
-[[autodoc]] apply_monkey_patches
+[[autodoc]] transformers.monkey_patch.apply_monkey_patches
