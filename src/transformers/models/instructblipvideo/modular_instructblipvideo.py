@@ -176,6 +176,7 @@ class InstructBlipVideoForConditionalGenerationModelOutput(InstructBlipForCondit
 
 class InstructBlipVideoModel(InstructBlipModel):
     @can_return_tuple
+    @auto_docstring
     def forward(
         self,
         pixel_values: torch.FloatTensor,
@@ -360,6 +361,7 @@ class InstructBlipVideoForConditionalGeneration(InstructBlipForConditionalGenera
         return special_image_mask
 
     @can_return_tuple
+    @auto_docstring
     def forward(
         self,
         pixel_values: torch.FloatTensor,

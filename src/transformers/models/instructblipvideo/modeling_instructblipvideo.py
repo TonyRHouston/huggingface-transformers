@@ -986,6 +986,7 @@ class InstructBlipVideoModel(InstructBlipVideoPreTrainedModel):
         return special_image_mask
 
     @can_return_tuple
+    @auto_docstring
     def forward(
         self,
         pixel_values: torch.FloatTensor,
@@ -1208,6 +1209,7 @@ class InstructBlipVideoForConditionalGeneration(InstructBlipVideoPreTrainedModel
         return special_image_mask
 
     @can_return_tuple
+    @auto_docstring
     def forward(
         self,
         pixel_values: torch.FloatTensor,

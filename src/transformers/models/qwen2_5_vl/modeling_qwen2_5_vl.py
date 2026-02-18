@@ -1255,6 +1255,7 @@ class Qwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
 
     @merge_with_config_defaults
     @can_return_tuple
+    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

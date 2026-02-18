@@ -680,6 +680,7 @@ class ChineseCLIPVisionTransformer(nn.Module):
         self.encoder = ChineseCLIPVisionEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
+    @auto_docstring
     def forward(
         self,
         pixel_values: torch.FloatTensor | None = None,
