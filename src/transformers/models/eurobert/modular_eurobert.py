@@ -134,11 +134,11 @@ class EuroBertConfig(LlamaConfig):
         mlp_bias=False,
         head_dim=None,
         classifier_pooling="late",
-        use_cache=False,
         **kwargs,
     ):
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
+        kwargs.pop("use_cache", None)  # use_cache=True is not supported for EuroBert
 
         super().__init__(
             vocab_size=vocab_size,
@@ -151,7 +151,7 @@ class EuroBertConfig(LlamaConfig):
             max_position_embeddings=max_position_embeddings,
             initializer_range=initializer_range,
             rms_norm_eps=rms_norm_eps,
-            use_cache=use_cache,
+            use_cache=False,
             bos_token_id=bos_token_id,
             eos_token_id=eos_token_id,
             pad_token_id=pad_token_id,
