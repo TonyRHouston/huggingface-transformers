@@ -31,7 +31,7 @@ logger = logging.get_logger(__name__)
 FLASH_MLA_MIN_SEQ_LEN = 2048
 
 
-def flash_mla_forward(
+def flash_mla_attention_forward(
     module: torch.nn.Module,
     query: torch.Tensor,
     key: torch.Tensor,
@@ -234,4 +234,4 @@ def _flash_mla_sparse_forward(
     return attn_output, None
 
 
-__all__ = ["flash_mla_forward"]
+__all__ = ["flash_mla_attention_forward"]

@@ -339,11 +339,11 @@ def load_and_register_attn_kernel(
         if attention_wrapper is None:
             attention_wrapper = flash_attention_forward
         kernel_function = attention_wrapper
-    elif hasattr(kernel, "flash_mla_sparse_fwd"):
-        from .flash_mla import flash_mla_forward
+    if hasattr(kernel, "flash_mla_sparse_fwd"):
+        from .flash_mla import flash_mla_attention_forward
 
         if attention_wrapper is None:
-            attention_wrapper = flash_mla_forward
+            attention_wrapper = flash_mla_attention_forward
         kernel_function = attention_wrapper
     elif kernel_name is not None:
         kernel_function = getattr(kernel, kernel_name)

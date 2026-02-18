@@ -414,11 +414,12 @@ class GlmMoeDsaAttention(nn.Module):
             causal_mask = attention_mask[..., :total_len]
             combined_mask = index_mask + causal_mask
         else:
-            combined_mask = (
-                attention_mask.masked_fill(index_mask == float("-inf"), float("-inf"))
-                if attention_mask is not None
-                else index_mask
-            )
+            combined_mask = None
+            # combined_mask = (
+            #     attention_mask.masked_fill(index_mask == float("-inf"), float("-inf"))
+            #     if attention_mask is not None
+            #     else index_mask
+            # )
 
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
             self.config._attn_implementation, eager_attention_forward
@@ -644,7 +645,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModel):
     # NOTE: FP8 quantization uses `_keep_in_fp32_modules` (not `_strict`) to decide which modules to NOT convert.
     # We must keep `indexer.weights_proj` as a plain Linear to match the checkpoint (no `weight_scale_inv`).
     _keep_in_fp32_modules = ["indexer.weights_proj"]
-    _default_flash_implementation = "kernels-community/flash-mla"
+    _default_flash_implementation = "flash_mla|kernels-community/flash-mla:flash_mla_sparse_fwd"
 
     @torch.no_grad()
     def _init_weights(self, module):

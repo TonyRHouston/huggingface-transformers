@@ -70,6 +70,7 @@ from .integrations.eager_paged import eager_paged_attention_forward
 from .integrations.flash_attention import flash_attention_forward
 from .integrations.flash_paged import paged_attention_forward
 from .integrations.flex_attention import flex_attention_forward
+from .integrations.flash_mla import flash_mla_attention_forward
 from .integrations.hub_kernels import is_kernel
 from .integrations.peft import maybe_load_adapters
 from .integrations.sdpa_attention import sdpa_attention_forward
@@ -1831,10 +1832,12 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         if is_kernel(applicable_attn_implementation):
             try:
                 # preload flash attention here to allow compile with fullgraph
+                # we need to load the attention kernel requested by the user.
                 if is_paged:
                     lazy_import_paged_flash_attention(applicable_attn_implementation)
                 else:
-                    lazy_import_flash_attention(applicable_attn_implementation)
+                    attention_wrapper = ALL_ATTENTION_FUNCTIONS.get(applicable_attn_implementation.rsplit("|")[0]) if "|" in applicable_attn_implementation else None
+                    lazy_import_flash_attention(applicable_attn_implementation, attention_wrapper=attention_wrapper)
 
                 # log that we used kernel fallback if successful
                 if requested_original_flash_attn:
@@ -4791,6 +4794,7 @@ class AttentionInterface(GeneralInterface):
         "paged|flash_attention_2": paged_attention_forward,
         "paged|sdpa": sdpa_attention_paged_forward,
         "paged|eager": eager_paged_attention_forward,
+        "flash_mla": flash_mla_attention_forward,
     }
 
     def get_interface(self, attn_implementation: str, default: Callable) -> Callable:
