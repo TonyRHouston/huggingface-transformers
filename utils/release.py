@@ -192,22 +192,28 @@ def pre_release_work(patch: bool = False):
     remove_internal_utils()
 
 
-def post_release_work():
+def post_release_work(yes: bool = False):
     """
     Do all the necessary post-release steps:
     - figure out the next dev version and ask confirmation
     - update the version everywhere
     - clean-up the model list in the main README
+
+    Args:
+        yes (`bool`, *optional*, defaults to `False`): Whether to skip confirmation and use the default version.
     """
     # First let's get the current version
     current_version = get_version()
     dev_version = f"{current_version.major}.{current_version.minor + 1}.0.dev0"
     current_version = current_version.base_version
 
-    # Check with the user we got that right.
-    version = input(f"Which version are we developing now? [{dev_version}]")
-    if len(version) == 0:
+    # Check with the user we got that right, unless --yes is provided.
+    if yes:
         version = dev_version
+    else:
+        version = input(f"Which version are we developing now? [{dev_version}]")
+        if len(version) == 0:
+            version = dev_version
 
     print(f"Updating version to {version}.")
     global_version_update(version)
@@ -217,10 +223,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--post_release", action="store_true", help="Whether this is pre or post release.")
     parser.add_argument("--patch", action="store_true", help="Whether or not this is a patch release.")
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompts and use defaults.")
     args = parser.parse_args()
     if not args.post_release:
         pre_release_work(patch=args.patch)
     elif args.patch:
         print("Nothing to do after a patch :-)")
     else:
-        post_release_work()
+        post_release_work(yes=args.yes)

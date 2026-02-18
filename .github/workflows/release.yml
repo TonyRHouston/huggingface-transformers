@@ -58,3 +58,48 @@ jobs:
       - name: Publish package distributions to TestPyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  bump_dev_version:
+    needs: upload_package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install packaging
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create branch and bump dev version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b bump-dev-version-${{ steps.version.outputs.version }}
+          python utils/release.py --post_release --yes
+          git add -A
+          git commit -m "Bump dev version after ${{ steps.version.outputs.version }} release"
+          git push origin bump-dev-version-${{ steps.version.outputs.version }}
+
+      - name: Create PR and request review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "Bump dev version after v${{ steps.version.outputs.version }} release" \
+            --body "Automatic dev version bump after release v${{ steps.version.outputs.version }}" \
+            --base main \
+            --head bump-dev-version-${{ steps.version.outputs.version }} \
+            --reviewer core-maintainers
+
