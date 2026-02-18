@@ -53,7 +53,7 @@ print(type(model.transformer.h[0].attn))  # <class '__main__.CustomGPT2Attention
 
 Monkey patches work through a two-step process:
 
-1. **Registration**: Call [`register_monkey_patch_mapping`] to add class replacements to a global registry.
+1. **Registration**: Call [`register_monkey_patch_mapping`] to add mappings to a global registry.
 
 2. **Application**: Patches are automatically applied during model initialization:
    - **`from_pretrained` / `from_config`**: Patches are **automatically** applied via an internal context manager. No additional action needed!
@@ -64,11 +64,11 @@ Once patches are registered, they persist and affect all subsequent model loads 
 **Important limitations**:
 
 - Only classes in `transformers` modeling modules are allowed to be patched (e.g., `GPT2Attention`, `BertEncoder`).
-- The class name you specify in the mapping (e.g., `"Qwen2MoeExperts"`) must **exactly match** the original class name as it appears in the model's source code. To find the correct name, inspect `transformers.models.<model_type>.modeling_<model_type>` (e.g., `transformers.models.bert.modeling_bert`) and look for the class you want to replace.
+- The mapping keys can be either exact class names or regular expression patterns (see [Pattern matching](#pattern-matching) below).
 
 ## Global registration
 
-Use [`register_monkey_patch_mapping`] to register replacements globally:
+Use [`register_monkey_patch_mapping`] to register mappings globally:
 
 ```python
 from transformers.monkey_patch import register_monkey_patch_mapping
@@ -89,16 +89,45 @@ register_monkey_patch_mapping(
 )
 ```
 
+## Pattern matching
+
+You can use regular expressions to match multiple classes with a single pattern:
+
+```python
+from transformers.monkey_patch import register_monkey_patch_mapping
+
+# Match all classes containing "Attention"
+register_monkey_patch_mapping(
+    mapping={".*Attention": CustomAttention}
+)
+
+# This will replace: BertAttention, GPT2Attention, T5Attention, etc.
+model = AutoModelForCausalLM.from_pretrained("bert-base-uncased")
+
+# More examples
+register_monkey_patch_mapping(
+    mapping={
+        ".*MoeExperts$": CustomExperts,           # Ends with "MoeExperts"
+        "^Llama\\d+Attention$": CustomAttention,  # Llama2Attention, Llama3Attention, etc.
+    }
+)
+```
+
+**Important**: Exact matches take precedence over patterns. If you register both `"BertAttention"` and `".*Attention"`, classes named `BertAttention` will use the exact-match replacement, while other matching classes will use the pattern-match replacement.
+
 To unregister patches, use [`unregister_monkey_patch_mapping`]:
 
 ```python
 from transformers.monkey_patch import unregister_monkey_patch_mapping
 
-# Unregister a single patch
-unregister_monkey_patch_mapping(class_names=["Qwen2MoeExperts"])
+# Unregister a single patch (use exact name or pattern from registration)
+unregister_monkey_patch_mapping(keys=["Qwen2MoeExperts"])
 
 # Unregister multiple patches at once
-unregister_monkey_patch_mapping(class_names=["Qwen2MoeExperts", "Qwen2MoeAttention"])
+unregister_monkey_patch_mapping(keys=["Qwen2MoeExperts", "Qwen2MoeAttention"])
+
+# Unregister a pattern
+unregister_monkey_patch_mapping(keys=[".*Attention"])
 ```
 
 To clear all registered patches, use [`clear_monkey_patch_mapping`]:
@@ -150,27 +179,27 @@ model = BertModel.from_pretrained("bert-base-uncased")  # Uses CustomAttention (
 
 - **Thread safety**: All patching operations are thread-safe. You can safely register, unregister, and apply patches from multiple threads.
 
-- **Exact name matching**: Class names in the mapping must exactly match the original class names as they appear in the model's source code. Case-sensitive!
+- **Matching behavior**: When using exact class names, they must exactly match the original class names as they appear in the model's source code (case-sensitive). When using regex patterns, they are matched against class names using `re.search()`.
 
 ## Troubleshooting
 
 ### My patch isn't being applied
 
-**Check class name**: Ensure the class name in your mapping exactly matches the original. For example:
+**Check class name or pattern**: Ensure the class name or pattern in your mapping is correct:
 
 ```python
-# ❌ Wrong - case mismatch
-register_monkey_patch_mapping(mapping={"bertattention": CustomAttention})
-
-# ✅ Correct
+# For exact names - must match exactly (case-sensitive)
 register_monkey_patch_mapping(mapping={"BertAttention": CustomAttention})
+
+# For patterns - use valid regex
+register_monkey_patch_mapping(mapping={".*Attention": CustomAttention})
 ```
 
-**Verify registration**: Use [`get_monkey_patch_mapping`] to confirm your patch is registered:
+**Verify registration**: Use [`get_monkey_patch_mapping`] to confirm your mapping is registered:
 
 ```python
 print(get_monkey_patch_mapping())
-# Should show: {'BertAttention': <class 'CustomAttention'>}
+# Shows all registered mappings: {'BertAttention': <class 'CustomAttention'>, '.*MLP': <class 'CustomMLP'>}
 ```
 
 **Check model source**: Find the exact class name in the model's source:

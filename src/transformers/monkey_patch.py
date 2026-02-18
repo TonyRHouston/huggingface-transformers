@@ -12,25 +12,79 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 import sys
 import threading
 from contextlib import contextmanager
 
-from .utils import is_torch_available
+from .utils import is_torch_available, logging
 from .utils.output_capturing import OutputRecorder
 
 
 if is_torch_available():
     import torch.nn as nn
 
+logger = logging.get_logger(__name__)
 
 _monkey_patch_mapping_cache: dict[str, type[nn.Module]] = {}
+_compiled_patterns_cache: dict[str, re.Pattern] = {}
 _monkey_patch_lock = threading.Lock()
+
+
+def _compile_pattern(pattern: str) -> re.Pattern | None:
+    """
+    Compile a regex pattern and cache it. Returns None if pattern is invalid.
+
+    Args:
+        pattern: The regex pattern string to compile
+
+    Returns:
+        Compiled regex pattern or None if invalid
+    """
+    if pattern in _compiled_patterns_cache:
+        return _compiled_patterns_cache[pattern]
+
+    try:
+        compiled = re.compile(pattern)
+        _compiled_patterns_cache[pattern] = compiled
+        return compiled
+    except re.error as e:
+        logger.warning(f"Invalid regex pattern '{pattern}': {e}. Treating as non-pattern.")
+        return None
+
+
+def _find_replacement_class(class_name: str, mapping: dict[str, type[nn.Module]]) -> type[nn.Module] | None:
+    """
+    Find replacement class for a given class name, checking exact matches first, then regex patterns.
+
+    Args:
+        class_name: The class name to find a replacement for
+        mapping: Dictionary of patterns/names to replacement classes
+
+    Returns:
+        The replacement class if found, None otherwise
+    """
+    # First check for exact match (highest priority)
+    if class_name in mapping:
+        return mapping[class_name]
+
+    # Then check regex patterns
+    for pattern, replacement_class in mapping.items():
+        # Skip if already matched as exact
+        if pattern == class_name:
+            continue
+
+        # Try to compile and match as regex
+        compiled_pattern = _compile_pattern(pattern)
+        if compiled_pattern is not None and compiled_pattern.search(class_name):
+            return replacement_class
+
+    return None
 
 
 def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite: bool = False) -> None:
     """
-    Register class mappings to enable automatic patching during model creation using `from_pretrained`,
+    Register patch mappings to enable automatic patching during model creation using `from_pretrained`,
     `from_config` or within the `apply_monkey_patches` context manager.
 
     Use this to register class replacements that will be automatically applied when loading any model.
@@ -39,8 +93,13 @@ def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite
 
     Args:
         mapping (`Dict[str, type[nn.Module]]`):
-            Mapping from original class names to replacement classes. Class names must exactly match
-            those in the model's module (e.g., `"Qwen2MoeExperts"` → `CustomExperts`).
+            Mapping from original class names (or regex patterns) to replacement classes. Supports:
+            - Exact class names: `"Qwen2MoeExperts"` → `CustomExperts`
+            - Regex patterns: `".*Attention"` matches `BertAttention`, `GPT2Attention`, etc.,
+            or `"^Llama\\d+Attention$"` matches `Llama2Attention`, `Llama3Attention`, etc.
+
+            Exact matches take precedence over patterns. Patterns are matched using `re.search()`,
+            so they can match anywhere in the class name unless you use anchors (`^` for start, `$` for end).
         overwrite (`bool`, *optional*, defaults to `False`):
             Whether to overwrite existing mappings for class names that are already registered.
 
@@ -53,18 +112,23 @@ def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite
         class SequentialExperts(nn.Module):
             ...
 
-        # Register the patch globally
+        # Register exact class name
         register_monkey_patch_mapping(
             mapping={"Qwen2MoeExperts": SequentialExperts}
         )
 
-        # The patch will be automatically applied during loading
-        model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2-57B-A14B-Instruct")
-
-        # You can register more patches later
+        # Register with regex pattern to match multiple classes
         register_monkey_patch_mapping(
-            mapping={"LlamaAttention": CustomAttention}
+            mapping={".*Attention": CustomAttention}  # Matches BertAttention, GPT2Attention, etc.
         )
+
+        # Match specific model versions
+        register_monkey_patch_mapping(
+            mapping={"^Llama\\d+Attention$": CustomLlamaAttention}  # Matches Llama2Attention, Llama3Attention
+        )
+
+        # The patch will be automatically applied during loading
+        model = AutoModelForCausalLM.from_pretrained("bert-base-uncased")
         ```
 
     Note:
@@ -91,16 +155,17 @@ def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite
             _monkey_patch_mapping_cache[class_name] = replacement_class
 
 
-def unregister_monkey_patch_mapping(class_names: list[str]) -> None:
+def unregister_monkey_patch_mapping(keys: list[str]) -> None:
     """
-    Unregister class mappings to disable automatic patching for specified classes.
+    Unregister patch mappings to disable automatic patching.
 
-    This removes specified class replacements from the global registry, preventing them from being applied
-    during model loading.
+    This removes specified mappings from the global registry, preventing them from being applied
+    during model loading. You must provide the exact same name or pattern that was used during registration.
 
     Args:
-        class_names (`List[str]`):
-            List of original class names to remove from the patch mapping (e.g., `["Qwen2MoeExperts"]`).
+        keys (`List[str]`):
+            List of mapping keys (class names or regex patterns) to remove from the patch mapping
+            (e.g., `["Qwen2MoeExperts"]` or `[".*Attention"]`).
 
     Example:
         ```python
@@ -121,13 +186,13 @@ def unregister_monkey_patch_mapping(class_names: list[str]) -> None:
     """
     global _monkey_patch_mapping_cache
     with _monkey_patch_lock:
-        for class_name in class_names:
-            if class_name not in _monkey_patch_mapping_cache:
+        for key in keys:
+            if key not in _monkey_patch_mapping_cache:
                 raise ValueError(
-                    f"Class '{class_name}' not found in monkey patch mapping cache. "
+                    f"Class or pattern '{key}' not found in monkey patch mapping cache. "
                     f"Cannot unregister a class that is not registered."
                 )
-            del _monkey_patch_mapping_cache[class_name]
+            del _monkey_patch_mapping_cache[key]
 
 
 def get_monkey_patch_mapping() -> dict[str, type[nn.Module]]:
@@ -135,7 +200,7 @@ def get_monkey_patch_mapping() -> dict[str, type[nn.Module]]:
     Get all registered patch mappings.
 
     Returns:
-        `Dict[str, type[nn.Module]]`: The global class mapping dictionary.
+        `Dict[str, type[nn.Module]]`: Dictionary mapping class names or patterns to replacement classes.
     """
     with _monkey_patch_lock:
         return _monkey_patch_mapping_cache.copy()
@@ -145,7 +210,7 @@ def clear_monkey_patch_mapping() -> None:
     """
     Clear all registered patch mappings.
 
-    This removes all registered class replacements from the global registry.
+    This removes all registered mappings from the global registry.
 
     Example:
         ```python
@@ -198,14 +263,32 @@ def apply_monkey_patches():
         return
 
     original_classes = {}
-    for class_name, replacement_class in mapping.items():
-        # Create list to avoid dict changed during iteration
-        for module in list(sys.modules.values()):
-            if module is not None and hasattr(module, "__name__"):
-                if module.__name__.startswith("transformers") and hasattr(module, class_name):
-                    original_class = getattr(module, class_name)
-                    original_classes[(module.__name__, class_name)] = original_class
-                    setattr(module, class_name, replacement_class)
+
+    # Create list to avoid dict changed during iteration
+    for module in list(sys.modules.values()):
+        if module is None or not hasattr(module, "__name__"):
+            continue
+        if not module.__name__.startswith("transformers"):
+            continue
+
+        # Iterate through all attributes in transformers modules
+        for attr_name in dir(module):
+            # Check if this attribute name matches any pattern before accessing it
+            replacement_class = _find_replacement_class(attr_name, mapping)
+            if replacement_class is None:
+                continue
+
+            try:
+                attr = getattr(module, attr_name)
+                # Check if it's a class
+                if not isinstance(attr, type):
+                    continue
+
+                original_classes[(module.__name__, attr_name)] = attr
+                setattr(module, attr_name, replacement_class)
+            except (AttributeError, TypeError, ImportError):
+                # Skip attributes that can't be accessed or modules that can't be imported
+                continue
 
     yield
 
@@ -259,11 +342,16 @@ def patch_output_recorders(model: nn.Module) -> None:
     if not mapping:
         return
 
-    for class_name, replacement_class in mapping.items():
-        for submodule in model.modules():
-            if hasattr(submodule, "_can_record_outputs") and submodule._can_record_outputs is not None:
-                for output, recorder in submodule._can_record_outputs.items():
-                    if isinstance(recorder, OutputRecorder) and recorder.target_class.__name__ == class_name:
+    for submodule in model.modules():
+        if hasattr(submodule, "_can_record_outputs") and submodule._can_record_outputs is not None:
+            for output, recorder in submodule._can_record_outputs.items():
+                if isinstance(recorder, OutputRecorder):
+                    # Check if target class matches any registered pattern or exact name
+                    replacement_class = _find_replacement_class(recorder.target_class.__name__, mapping)
+                    if replacement_class is not None:
                         recorder.target_class = replacement_class
-                    elif isinstance(recorder, type) and recorder.__name__ == class_name:
+                elif isinstance(recorder, type):
+                    # Check if class type matches any registered pattern or exact name
+                    replacement_class = _find_replacement_class(recorder.__name__, mapping)
+                    if replacement_class is not None:
                         submodule._can_record_outputs[output] = replacement_class
