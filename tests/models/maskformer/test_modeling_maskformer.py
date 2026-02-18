@@ -15,6 +15,7 @@
 
 import copy
 import unittest
+from functools import cached_property
 
 import numpy as np
 
@@ -31,7 +32,6 @@ from transformers.testing_utils import (
     slow,
     torch_device,
 )
-from transformers.utils import cached_property
 
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin
@@ -97,7 +97,7 @@ class MaskFormerModelTester:
         return config, pixel_values, pixel_mask, mask_labels, class_labels
 
     def get_config(self):
-        return MaskFormerConfig.from_backbone_and_decoder_configs(
+        return MaskFormerConfig(
             backbone_config=SwinConfig(
                 depths=[1, 1, 1, 1],
                 embed_dim=16,
@@ -205,11 +205,9 @@ class MaskFormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
     )
 
     is_encoder_decoder = False
-    test_pruning = False
-    test_head_masking = False
+
     test_missing_keys = False
     zero_init_hidden_state = True
-    test_torch_exportable = True
 
     def setUp(self):
         self.model_tester = MaskFormerModelTester(self)
@@ -219,7 +217,7 @@ class MaskFormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
         inputs_dict = copy.deepcopy(inputs_dict)
 
         if return_labels:
-            if model_class in [MaskFormerForInstanceSegmentation]:
+            if model_class == MaskFormerForInstanceSegmentation:
                 inputs_dict["mask_labels"] = torch.zeros(
                     (
                         self.model_tester.batch_size,
@@ -451,25 +449,32 @@ class MaskFormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
     def test_backbone_selection(self):
         config, inputs = self.model_tester.prepare_config_and_inputs_for_common()
 
-        config.backbone_config = None
-        config.backbone_kwargs = {"out_indices": [1, 2, 3]}
-        config.use_pretrained_backbone = True
+        config_dict = config.to_dict()
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [1, 2, 3]}
+        config_dict["use_pretrained_backbone"] = True
 
         # Load a timm backbone
         # We can't load transformer checkpoint with timm backbone, as we can't specify features_only and out_indices
-        config.backbone = "resnet18"
-        config.use_timm_backbone = True
+        config_dict["backbone"] = "resnet18"
+        config_dict["use_timm_backbone"] = True
+        config = config.__class__(**config_dict)
 
         for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device).eval()
+            model = model_class(copy.deepcopy(config)).to(torch_device).eval()
             if model.__class__.__name__ == "MaskFormerModel":
                 self.assertEqual(model.pixel_level_module.encoder.out_indices, [1, 2, 3])
             elif model.__class__.__name__ == "MaskFormerForUniversalSegmentation":
                 self.assertEqual(model.model.pixel_level_module.encoder.out_indices, [1, 2, 3])
 
         # Load a HF backbone
-        config.backbone = "microsoft/resnet-18"
-        config.use_timm_backbone = False
+        config_dict = config.to_dict()
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [1, 2, 3]}
+        config_dict["use_pretrained_backbone"] = True
+        config_dict["backbone"] = "microsoft/resnet-18"
+        config_dict["use_timm_backbone"] = False
+        config = config.__class__(**config_dict)
 
         for model_class in self.all_model_classes:
             model = model_class(config).to(torch_device).eval()
@@ -604,9 +609,9 @@ class MaskFormerModelIntegrationTest(unittest.TestCase):
                     [1.0766e-04, -7.7630e00, -5.1263e00],
                 ],
                 ("cuda", 8): [
-                    [1.6507e00, -5.2568e00, -3.3520e00],
-                    [3.5767e-02, -5.9023e00, -2.9313e00],
-                    [-6.2712e-04, -7.7627e00, -5.1268e00],
+                    [1.6512e00, -5.2572e00, -3.3519e00],
+                    [3.6163e-02, -5.9025e00, -2.9313e00],
+                    [1.1681e-04, -7.7631e00, -5.1263e00],
                 ],
             }
         )
@@ -641,7 +646,7 @@ class MaskFormerModelIntegrationTest(unittest.TestCase):
         expectations = Expectations(
             {
                 (None, None): [[-0.9046, -2.6366, -4.6062], [-3.4179, -5.7890, -8.8057], [-4.9179, -7.6560, -10.7711]],
-                ("cuda", 8): [[-0.9000, -2.6283, -4.5964], [-3.4123, -5.7789, -8.7919], [-4.9132, -7.6444, -10.7557]],
+                ("cuda", 8): [[-0.9046, -2.6366, -4.6062], [-3.4179, -5.7890, -8.8057], [-4.9179, -7.6560, -10.7711]],
             }
         )
         expected_slice = torch.tensor(expectations.get_expectation()).to(torch_device)
@@ -659,9 +664,9 @@ class MaskFormerModelIntegrationTest(unittest.TestCase):
                     [7.2449, -2.2764, -2.1874],
                 ],
                 ("cuda", 8): [
-                    [4.7177, -3.2586, -2.8853],
-                    [6.6845, -2.9186, -1.2491],
-                    [7.2443, -2.2760, -2.1858],
+                    [4.7188, -3.2585, -2.8857],
+                    [6.6871, -2.9181, -1.2487],
+                    [7.2449, -2.2764, -2.1874],
                 ],
             }
         )

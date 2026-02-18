@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 Meta Platforms, Inc. and the HuggingFace Inc. team. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +12,7 @@
 # limitations under the License.
 """PerceptionLM model configuration"""
 
-from ...configuration_utils import PretrainedConfig
+from ...configuration_utils import PreTrainedConfig
 from ...utils import logging
 from ..auto import CONFIG_MAPPING, AutoConfig
 from ..timm_wrapper.configuration_timm_wrapper import TimmWrapperConfig
@@ -22,7 +21,7 @@ from ..timm_wrapper.configuration_timm_wrapper import TimmWrapperConfig
 logger = logging.get_logger(__name__)
 
 
-class PerceptionLMConfig(PretrainedConfig):
+class PerceptionLMConfig(PreTrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`PerceptionLMForConditionalGeneration`]. It is used to instantiate an
     PerceptionLM model according to the specified arguments, defining the model architecture.
@@ -32,13 +31,13 @@ class PerceptionLMConfig(PretrainedConfig):
     -  [facebook/Perception-LM-3B](https://huggingface.co/facebook/Perception-LM-3B).
     -  [facebook/Perception-LM-8B](https://huggingface.co/facebook/Perception-LM-8B).
 
-    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PretrainedConfig`] for more information.
+    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PreTrainedConfig`] for more information.
 
     Args:
         vision_config (`Union[TimmWrapperConfig, dict]`, *optional*, defaults to `TimmWrapperConfig()`):
             The config object or dictionary of the vision backbone.
-        text_config (`Union[PretrainedConfig, dict]`, *optional*, defaults to `LlamaConfig()`):
+        text_config (`Union[PreTrainedConfig, dict]`, *optional*, defaults to `LlamaConfig()`):
             The config object or dictionary of the text backbone.
         vision_use_cls_token (`bool`, *optional*, defaults to `True`):
             Whether CLS token is used in the vision backbone. If used, we remove CLS token embedding from vision output.
@@ -68,14 +67,14 @@ class PerceptionLMConfig(PretrainedConfig):
         if isinstance(vision_config, dict):
             vision_config = TimmWrapperConfig(**vision_config)
         elif isinstance(vision_config, TimmWrapperConfig):
-            vision_config = vision_config
+            pass
         elif vision_config is None:
             vision_config = TimmWrapperConfig()
         self.vision_config = vision_config
         self.vision_use_cls_token = vision_use_cls_token
 
         if isinstance(text_config, dict):
-            text_config["model_type"] = text_config["model_type"] if "model_type" in text_config else "llama"
+            text_config["model_type"] = text_config.get("model_type", "llama")
             text_config = CONFIG_MAPPING[text_config["model_type"]](**text_config)
         elif text_config is None:
             text_config = CONFIG_MAPPING["llama"]()

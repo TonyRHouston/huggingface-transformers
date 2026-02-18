@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2022 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -262,7 +261,7 @@ def convert_wav2vec2_conformer_checkpoint(
                 word_delimiter_token="|",
                 do_lower_case=False,
             )
-            return_attention_mask = True if config.feat_extract_norm == "layer" else False
+            return_attention_mask = config.feat_extract_norm == "layer"
             feature_extractor = Wav2Vec2FeatureExtractor(
                 feature_size=1,
                 sampling_rate=16000,

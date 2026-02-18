@@ -13,13 +13,15 @@
 # limitations under the License.
 """Testing suite for the PyTorch Mask2Former model."""
 
+import copy
 import unittest
+from functools import cached_property
 
 import numpy as np
+import pytest
 
 from tests.test_modeling_common import floats_tensor
-from transformers import AutoModelForImageClassification, Mask2FormerConfig, is_torch_available, is_vision_available
-from transformers.pytorch_utils import is_torch_greater_or_equal_than_2_4
+from transformers import Mask2FormerConfig, is_torch_available, is_vision_available
 from transformers.testing_utils import (
     Expectations,
     require_timm,
@@ -31,10 +33,9 @@ from transformers.testing_utils import (
     slow,
     torch_device,
 )
-from transformers.utils import cached_property
 
 from ...test_configuration_common import ConfigTester
-from ...test_modeling_common import ModelTesterMixin, _config_zero_init
+from ...test_modeling_common import ModelTesterMixin
 from ...test_pipeline_mixin import PipelineTesterMixin
 
 
@@ -202,10 +203,8 @@ class Mask2FormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestC
     pipeline_model_mapping = {"image-feature-extraction": Mask2FormerModel} if is_torch_available() else {}
 
     is_encoder_decoder = False
-    test_pruning = False
-    test_head_masking = False
+
     test_missing_keys = False
-    test_torch_exportable = True
 
     def setUp(self):
         self.model_tester = Mask2FormerModelTester(self)
@@ -324,84 +323,39 @@ class Mask2FormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestC
     def test_backbone_selection(self):
         config, inputs = self.model_tester.prepare_config_and_inputs_for_common()
 
-        config.backbone_config = None
-        config.backbone_kwargs = {"out_indices": [1, 2, 3]}
-        config.use_pretrained_backbone = True
+        config_dict = config.to_dict()
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [1, 2, 3]}
+        config_dict["use_pretrained_backbone"] = True
 
         # Load a timm backbone
         # We can't load transformer checkpoint with timm backbone, as we can't specify features_only and out_indices
-        config.backbone = "resnet18"
-        config.use_timm_backbone = True
+        config_dict["backbone"] = "resnet18"
+        config_dict["use_timm_backbone"] = True
+        config = config.__class__(**config_dict)
 
         for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device).eval()
+            model = model_class(copy.deepcopy(config)).to(torch_device).eval()
             if model.__class__.__name__ == "Mask2FormerModel":
                 self.assertEqual(model.pixel_level_module.encoder.out_indices, [1, 2, 3])
             elif model.__class__.__name__ == "Mask2FormerForUniversalSegmentation":
                 self.assertEqual(model.model.pixel_level_module.encoder.out_indices, [1, 2, 3])
 
         # Load a HF backbone
-        config.backbone = "microsoft/resnet-18"
-        config.use_timm_backbone = False
+        config_dict = config.to_dict()
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [1, 2, 3]}
+        config_dict["use_pretrained_backbone"] = True
+        config_dict["backbone"] = "microsoft/resnet-18"
+        config_dict["use_timm_backbone"] = False
+        config = config.__class__(**config_dict)
 
         for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device).eval()
+            model = model_class(copy.deepcopy(config)).to(torch_device).eval()
             if model.__class__.__name__ == "Mask2FormerModel":
                 self.assertEqual(model.pixel_level_module.encoder.out_indices, [1, 2, 3])
             elif model.__class__.__name__ == "Mask2FormerForUniversalSegmentation":
                 self.assertEqual(model.model.pixel_level_module.encoder.out_indices, [1, 2, 3])
-
-    def test_initialization(self):
-        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
-
-        configs_no_init = _config_zero_init(config)
-        for model_class in self.all_model_classes:
-            model = model_class(config=configs_no_init)
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    if (
-                        "self_attn.sampling_offsets.bias" in name
-                        or "self_attn.value_proj.weight" in name
-                        or "self_attn.output_proj.weight" in name
-                    ):
-                        continue
-                    self.assertIn(
-                        ((param.data.mean() * 1e9).round() / 1e9).item(),
-                        [0.0, 1.0],
-                        msg=f"Parameter {name} of model {model_class} seems not properly initialized",
-                    )
-
-    def test_initialization_pretrained_backbone(self):
-        backbone_name = "microsoft/resnet-18"
-
-        # load Mask2Former config with a pretrained backbone
-        config = Mask2FormerConfig(
-            backbone=backbone_name,
-            use_pretrained_backbone=True,
-        )
-
-        # load pretrained backbone
-        backbone_model = AutoModelForImageClassification.from_pretrained(backbone_name, device_map=torch_device)
-
-        def params_match(params1, params2):
-            return all((p1 == p2).all() for p1, p2 in zip(params1, params2))
-
-        for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device).eval()
-            if model.__class__.__name__ == "Mask2FormerModel":
-                self.assertTrue(
-                    params_match(
-                        backbone_model.base_model.encoder.parameters(),
-                        model.pixel_level_module.encoder.encoder.parameters(),
-                    )
-                )
-            elif model.__class__.__name__ == "Mask2FormerForUniversalSegmentation":
-                self.assertTrue(
-                    params_match(
-                        backbone_model.base_model.encoder.parameters(),
-                        model.model.pixel_level_module.encoder.encoder.parameters(),
-                    )
-                )
 
 
 TOLERANCE = 2e-4
@@ -512,9 +466,9 @@ class Mask2FormerModelIntegrationTest(unittest.TestCase):
                     [-6.6105, -6.3427, -6.4675],
                 ],
                 ("cuda", 8): [
-                    [-8.7809, -9.0041, -8.8087],
-                    [-7.4075, -7.0307, -6.5385],
-                    [-6.6088, -6.3417, -6.4627],
+                    [-8.7839, -9.0056, -8.8122],
+                    [-7.4104, -7.0313, -6.5401],
+                    [-6.6105, -6.3428, -6.4675],
                 ],
             }
         )
@@ -531,9 +485,9 @@ class Mask2FormerModelIntegrationTest(unittest.TestCase):
                     [0.3045, -7.7293, -3.0275],
                 ],
                 ("cuda", 8): [
-                    [1.8326, -8.0834, -4.1916],
-                    [0.8446, -9.0048, -3.6048],
-                    [0.3042, -7.7296, -3.0277],
+                    [1.8324, -8.0835, -4.1922],
+                    [0.8450, -9.0050, -3.6053],
+                    [0.3045, -7.7293, -3.0275],
                 ],
             }
         )
@@ -576,9 +530,8 @@ class Mask2FormerModelIntegrationTest(unittest.TestCase):
 
         self.assertTrue(outputs.loss is not None)
 
+    @pytest.mark.torch_export_test
     def test_export(self):
-        if not is_torch_greater_or_equal_than_2_4:
-            self.skipTest(reason="This test requires torch >= 2.4 to run.")
         model = Mask2FormerForUniversalSegmentation.from_pretrained(self.model_checkpoints).to(torch_device).eval()
         image_processor = self.default_image_processor
         image = prepare_img()

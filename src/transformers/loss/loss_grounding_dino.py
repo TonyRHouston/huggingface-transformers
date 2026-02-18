@@ -146,6 +146,22 @@ class GroundingDinoImageLoss(ImageLoss):
         self.focal_alpha = focal_alpha
         self.losses = losses
 
+    @torch.no_grad()
+    def loss_cardinality(self, outputs, targets, indices, num_boxes):
+        """
+        Compute the cardinality error, i.e. the absolute error in the number of predicted non-empty boxes.
+
+        This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients.
+        """
+        logits = outputs["logits"]
+        device = logits.device
+        target_lengths = torch.as_tensor([len(v["class_labels"]) for v in targets], device=device)
+        # Count the number of predictions that are NOT "no-object" (sigmoid > 0.5 threshold)
+        card_pred = (logits.sigmoid().max(-1).values > 0.5).sum(1)
+        card_err = nn.functional.l1_loss(card_pred.float(), target_lengths.float())
+        losses = {"cardinality_error": card_err}
+        return losses
+
     def _get_target_classes_one_hot(self, outputs, targets, indices):
         """
         Create one_hot based on the matching indices
@@ -267,5 +283,5 @@ def GroundingDinoForObjectDetectionLoss(
             aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    loss = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+    loss = sum(loss_dict[k] * weight_dict[k] for k in loss_dict if k in weight_dict)
     return loss, loss_dict, auxiliary_outputs

@@ -75,8 +75,8 @@ class Message:
         time_spent = [r["time_spent"].split(", ")[0] for r in all_results if len(r["time_spent"])]
         total_secs = 0
 
-        for time in time_spent:
-            time_parts = time.split(":")
+        for timings in time_spent:
+            time_parts = timings.split(":")
 
             # Time can be formatted as xx:xx:xx, as .xx, or as x.xx if the time spent was less than a minute.
             if len(time_parts) == 1:
@@ -332,7 +332,7 @@ if __name__ == "__main__":
 
     doc_test_results = {}
     # `artifact_key` is the artifact path
-    for artifact_key, artifact_obj in available_artifacts.items():
+    for artifact_obj in available_artifacts.values():
         artifact_path = artifact_obj.paths[0]
         if not artifact_path["path"].startswith("doc_tests_gpu_test_reports_"):
             continue
@@ -371,7 +371,7 @@ if __name__ == "__main__":
                         file_path, test = line, line
 
                     job_result["failed"].append(test)
-                    failure = all_failures[test] if test in all_failures else "N/A"
+                    failure = all_failures.get(test, "N/A")
                     job_result["failures"][test] = failure
 
     # Save and to be uploaded as artifact
@@ -379,6 +379,6 @@ if __name__ == "__main__":
     with open("doc_test_results/doc_test_results.json", "w", encoding="UTF-8") as fp:
         json.dump(doc_test_results, fp, ensure_ascii=False, indent=4)
 
-    message = Message("🤗 Results of the doc tests.", doc_test_results)
+    message = Message("[INFO] Results of the doc tests.", doc_test_results)
     message.post()
     message.post_reply()

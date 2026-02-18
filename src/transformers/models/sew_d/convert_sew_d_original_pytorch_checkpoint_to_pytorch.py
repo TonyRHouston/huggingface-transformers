@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2021 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -252,7 +251,7 @@ def convert_sew_checkpoint(
         config = convert_config(model[0], is_finetuned)
     model = model[0].eval()
 
-    return_attention_mask = True if config.feat_extract_norm == "layer" else False
+    return_attention_mask = config.feat_extract_norm == "layer"
     feature_extractor = Wav2Vec2FeatureExtractor(
         feature_size=1,
         sampling_rate=16000,
