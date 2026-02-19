@@ -1,0 +1,919 @@
+# Copyright 2025 Physical Intelligence and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""PI0 model: PaliGemma + Action Expert with flow matching for robot action prediction."""
+
+import math
+from dataclasses import dataclass
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from ...cache_utils import Cache, DynamicCache
+from ...masking_utils import create_causal_mask
+from ...modeling_outputs import BaseModelOutputWithPast
+from ...modeling_utils import PreTrainedModel
+from ...processing_utils import Unpack
+from ...utils import ModelOutput, TransformersKwargs, auto_docstring, logging
+from ..auto import AutoConfig, AutoModel
+from ..gemma.modeling_gemma import (
+    GemmaDecoderLayer,
+    GemmaModel,
+    GemmaRMSNorm,
+    apply_rotary_pos_emb,
+    eager_attention_forward,
+)
+from ..paligemma.configuration_paligemma import PaliGemmaConfig
+from ..paligemma.modeling_paligemma import PaliGemmaMultiModalProjector
+from ..siglip import SiglipVisionConfig
+
+
+logger = logging.get_logger(__name__)
+
+
+class PI0Config(PaliGemmaConfig):
+    r"""
+    Configuration class for the PI0 model family (PI0 and PI0.5).
+
+    PI0 is a robot action prediction model that combines a PaliGemma VLM backbone
+    with an action expert Gemma model. It uses flow matching for continuous action generation.
+
+    Args:
+        vision_config (`dict`, *optional*):
+            Configuration for the vision encoder (SiglipVisionModel).
+        text_config (`dict`, *optional*):
+            Configuration for the language model (GemmaModel).
+        expert_config (`dict`, *optional*):
+            Configuration for the action expert (GemmaModel). Defaults to a Gemma 300M variant.
+        use_adarms (`bool`, *optional*, defaults to `False`):
+            Whether to use Adaptive RMS normalization (PI0.5 mode). When True, the expert model
+            uses AdaRMSNorm layers conditioned on a time embedding instead of state+action+time fusion.
+        chunk_size (`int`, *optional*, defaults to 50):
+            Number of action steps to predict per chunk.
+        max_state_dim (`int`, *optional*, defaults to 32):
+            Maximum state vector dimension (shorter vectors are zero-padded).
+        max_action_dim (`int`, *optional*, defaults to 32):
+            Maximum action vector dimension (shorter vectors are zero-padded).
+        num_inference_steps (`int`, *optional*, defaults to 10):
+            Number of denoising steps during inference.
+        time_sampling_beta_alpha (`float`, *optional*, defaults to 1.5):
+            Alpha parameter for Beta distribution used to sample diffusion time during training.
+        time_sampling_beta_beta (`float`, *optional*, defaults to 1.0):
+            Beta parameter for Beta distribution used to sample diffusion time during training.
+        time_sampling_scale (`float`, *optional*, defaults to 0.999):
+            Scale factor for sampled time values.
+        time_sampling_offset (`float`, *optional*, defaults to 0.001):
+            Offset added to sampled time values.
+        min_period (`float`, *optional*, defaults to 4e-3):
+            Minimum period for sinusoidal time embedding.
+        max_period (`float`, *optional*, defaults to 4.0):
+            Maximum period for sinusoidal time embedding.
+
+    Example:
+    ```python
+    >>> from transformers import PI0ForConditionalGeneration, PI0Config
+
+    >>> config = PI0Config()
+    >>> model = PI0ForConditionalGeneration(config)
+    ```
+    """
+
+    model_type = "pi0"
+    sub_configs = {
+        "text_config": AutoConfig,
+        "vision_config": SiglipVisionConfig,
+        "expert_config": AutoConfig,
+    }
+
+    def __init__(
+        self,
+        vision_config=None,
+        text_config=None,
+        expert_config=None,
+        image_token_index=256000,
+        vocab_size=257152,
+        projection_dim=2048,
+        hidden_size=2048,
+        tie_word_embeddings: bool | None = True,
+        use_adarms=False,
+        chunk_size=50,
+        max_state_dim=32,
+        max_action_dim=32,
+        num_inference_steps=10,
+        time_sampling_beta_alpha=1.5,
+        time_sampling_beta_beta=1.0,
+        time_sampling_scale=0.999,
+        time_sampling_offset=0.001,
+        min_period=4e-3,
+        max_period=4.0,
+        **kwargs,
+    ):
+        if vision_config is None:
+            vision_config = {
+                "hidden_size": 1152,
+                "intermediate_size": 4304,
+                "num_hidden_layers": 27,
+                "num_attention_heads": 16,
+                "patch_size": 14,
+                "image_size": 224,
+                "vision_use_head": False,
+            }
+        super().__init__(
+            vision_config=vision_config,
+            text_config=text_config,
+            image_token_index=image_token_index,
+            vocab_size=vocab_size,
+            projection_dim=projection_dim,
+            hidden_size=hidden_size,
+            tie_word_embeddings=tie_word_embeddings,
+            **kwargs,
+        )
+
+        self.use_adarms = use_adarms
+        self.chunk_size = chunk_size
+        self.max_state_dim = max_state_dim
+        self.max_action_dim = max_action_dim
+        self.num_inference_steps = num_inference_steps
+        self.time_sampling_beta_alpha = time_sampling_beta_alpha
+        self.time_sampling_beta_beta = time_sampling_beta_beta
+        self.time_sampling_scale = time_sampling_scale
+        self.time_sampling_offset = time_sampling_offset
+        self.min_period = min_period
+        self.max_period = max_period
+
+        if isinstance(expert_config, dict):
+            expert_config["model_type"] = expert_config.get("model_type", "gemma")
+            self.expert_config = AutoConfig.for_model(**expert_config)
+        elif expert_config is None:
+            self.expert_config = AutoConfig.for_model(
+                "gemma",
+                hidden_size=1024,
+                num_hidden_layers=18,
+                intermediate_size=4096,
+                num_attention_heads=8,
+                num_key_value_heads=1,
+                head_dim=256,
+                vocab_size=self.text_config.vocab_size,
+            )
+        else:
+            self.expert_config = expert_config
+
+
+@dataclass
+class PI0Output(ModelOutput):
+    """Output type for PI0ForConditionalGeneration.
+
+    loss (`torch.FloatTensor` of shape `(1,)`, *optional*):
+        Flow matching MSE loss, returned when `actions` is provided.
+    loss_per_sample (`torch.FloatTensor` of shape `(batch_size, chunk_size, max_action_dim)`, *optional*):
+        Per-element MSE loss before reduction, returned when `actions` is provided.
+    """
+
+    loss: torch.FloatTensor | None = None
+    loss_per_sample: torch.FloatTensor | None = None
+
+
+def create_sinusoidal_pos_embedding(
+    time: torch.Tensor, dimension: int, min_period: float, max_period: float
+) -> torch.Tensor:
+    if dimension % 2 != 0:
+        raise ValueError(f"dimension ({dimension}) must be divisible by 2")
+    if time.ndim != 1:
+        raise ValueError("The time tensor is expected to be of shape `(batch_size, )`.")
+
+    device = time.device
+    dtype = torch.float64 if device.type not in ("mps", "cpu") else torch.float32
+    fraction = torch.linspace(0.0, 1.0, dimension // 2, dtype=dtype, device=device)
+    period = min_period * (max_period / min_period) ** fraction
+
+    scaling_factor = 1.0 / period * 2 * math.pi
+    sin_input = scaling_factor[None, :] * time[:, None]
+    return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
+
+
+def sample_beta(alpha: float, beta: float, batch_size: int, device: torch.device) -> torch.Tensor:
+    alpha_t = torch.tensor(alpha, dtype=torch.float32)
+    beta_t = torch.tensor(beta, dtype=torch.float32)
+    dist = torch.distributions.Beta(alpha_t, beta_t)
+    return dist.sample((batch_size,)).to(device)
+
+
+def make_att_2d_masks(pad_masks: torch.Tensor, att_masks: torch.Tensor) -> torch.Tensor:
+    """Build 2D attention masks from padding and autoregressive masks.
+
+    Tokens can attend to valid input tokens which have a cumulative mask_ar
+    smaller or equal to theirs. mask_ar=0 means bidirectional within the block,
+    mask_ar=1 means causal boundary.
+    """
+    cumsum = torch.cumsum(att_masks, dim=1)
+    att_2d_masks = cumsum[:, None, :] <= cumsum[:, :, None]
+    pad_2d_masks = pad_masks[:, None, :] * pad_masks[:, :, None]
+    return att_2d_masks & pad_2d_masks
+
+
+def prepare_attention_mask_4d(att_2d_masks: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """Convert a 2D boolean attention mask to a 4D float mask for eager attention."""
+    return torch.where(att_2d_masks[:, None, :, :], 0.0, torch.finfo(dtype).min)
+
+
+def _gated_residual(residual: torch.Tensor, delta: torch.Tensor, gate: torch.Tensor | None) -> torch.Tensor:
+    if gate is None:
+        return residual + delta
+    return residual * gate + delta * (1 - gate)
+
+
+class PI0AdaRMSNorm(GemmaRMSNorm):
+    def __init__(self, dim: int, eps: float = 1e-6, conditioning_dim: int | None = None):
+        super().__init__(dim, eps)
+        self.conditioning_dim = conditioning_dim
+        if conditioning_dim is not None:
+            self.dense = nn.Linear(conditioning_dim, dim, bias=False)
+            self.gate_dense = nn.Linear(conditioning_dim, dim, bias=False)
+
+    def forward(self, hidden_states, cond=None):
+        normed = self._norm(hidden_states.float())
+        normed = normed * (1.0 + self.weight.float())
+        normed = normed.type_as(hidden_states)
+        if cond is None or self.conditioning_dim is None:
+            return normed, None
+        shift = self.dense(cond)
+        gate = torch.sigmoid(self.gate_dense(cond))
+        return normed * (1 + shift), gate
+
+
+class PI0DecoderLayer(GemmaDecoderLayer):
+    """Gemma decoder layer variant that uses PI0AdaRMSNorm when use_adarms is enabled."""
+
+    def __init__(self, config, layer_idx: int):
+        use_adarms = getattr(config, "use_adarms", False)
+        conditioning_dim = config.hidden_size if use_adarms else None
+        super().__init__(config, layer_idx)
+        self.input_layernorm = PI0AdaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps, conditioning_dim=conditioning_dim
+        )
+        self.post_attention_layernorm = PI0AdaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps, conditioning_dim=conditioning_dim
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        use_cache: bool | None = False,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        adarms_cond: torch.Tensor | None = None,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states, gate_attn = self.input_layernorm(hidden_states, cond=adarms_cond)
+        # Self Attention
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
+        )
+        hidden_states = _gated_residual(residual, hidden_states, gate_attn)
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states, gate_mlp = self.post_attention_layernorm(hidden_states, cond=adarms_cond)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = _gated_residual(residual, hidden_states, gate_mlp)
+        return hidden_states
+
+
+class PI0MultiModalProjector(PaliGemmaMultiModalProjector):
+    pass
+
+
+@auto_docstring
+class PI0PreTrainedModel(PreTrainedModel):
+    config_class = PI0Config
+    base_model_prefix = "model"
+    input_modalities = ("image", "text")
+    supports_gradient_checkpointing = True
+    _no_split_modules = ["PI0MultiModalProjector", "GemmaDecoderLayer", "PI0DecoderLayer"]
+    _skip_keys_device_placement = "past_key_values"
+    _supports_flash_attn = True
+    _supports_sdpa = True
+
+
+class PI0ExpertModel(GemmaModel):
+    """Gemma model variant used as action expert. Uses PI0AdaRMSNorm and PI0DecoderLayer."""
+
+    def __init__(self, config):
+        use_adarms = getattr(config, "use_adarms", False)
+        conditioning_dim = config.hidden_size if use_adarms else None
+        super().__init__(config)
+        self.layers = nn.ModuleList(
+            [PI0DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
+        self.norm = PI0AdaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, conditioning_dim=conditioning_dim)
+        self.post_init()
+
+    @auto_docstring(
+        custom_args=r"""
+        adarms_cond (`torch.Tensor`, *optional*):
+            Conditioning tensor for Adaptive RMS normalization (PI0.5 mode).
+        """
+    )
+    def forward(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        use_cache: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
+        adarms_cond: torch.Tensor | None = None,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutputWithPast:
+        if inputs_embeds is None:
+            raise ValueError("PI0ExpertModel requires inputs_embeds (no embed_tokens)")
+
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache(config=self.config)
+
+        if cache_position is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position = torch.arange(
+                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+            )
+
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
+
+        causal_mask = create_causal_mask(
+            config=self.config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
+
+        hidden_states = inputs_embeds
+        position_embeddings = self.rotary_emb(hidden_states, position_ids=position_ids)
+
+        normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
+        hidden_states = hidden_states * normalizer
+
+        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+            hidden_states = decoder_layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                adarms_cond=adarms_cond,
+                **kwargs,
+            )
+        hidden_states, _ = self.norm(hidden_states, cond=adarms_cond)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=past_key_values if use_cache else None,
+        )
+
+
+def compute_layer_complete(
+    layer_idx: int,
+    inputs_embeds: list[torch.Tensor],
+    attention_mask: torch.Tensor,
+    position_ids: torch.Tensor,
+    adarms_cond: list[torch.Tensor | None],
+    language_model: nn.Module,
+    expert_model: PI0ExpertModel,
+) -> list[torch.Tensor]:
+    """Compute one merged attention layer across VLM language model and action expert."""
+    models = [language_model, expert_model]
+    query_states = []
+    key_states = []
+    value_states = []
+    gates = []
+
+    for i, hidden_states in enumerate(inputs_embeds):
+        layer = models[i].layers[layer_idx]
+        if hasattr(layer.input_layernorm, "conditioning_dim") and layer.input_layernorm.conditioning_dim is not None:
+            hidden_states, gate = layer.input_layernorm(hidden_states, cond=adarms_cond[i])
+        else:
+            hidden_states = layer.input_layernorm(hidden_states)
+            gate = None
+        gates.append(gate)
+
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
+        query_state = layer.self_attn.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        key_state = layer.self_attn.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_state = layer.self_attn.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        query_states.append(query_state)
+        key_states.append(key_state)
+        value_states.append(value_state)
+
+    query_states = torch.cat(query_states, dim=2)
+    key_states = torch.cat(key_states, dim=2)
+    value_states = torch.cat(value_states, dim=2)
+
+    cos, sin = language_model.rotary_emb(
+        torch.zeros(
+            query_states.shape[0],
+            query_states.shape[2],
+            query_states.shape[-1],
+            device=query_states.device,
+            dtype=query_states.dtype,
+        ),
+        position_ids,
+    )
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, unsqueeze_dim=1)
+
+    vlm_layer = language_model.layers[layer_idx]
+    scaling = vlm_layer.self_attn.scaling
+
+    att_output, _ = eager_attention_forward(
+        vlm_layer.self_attn,
+        query_states,
+        key_states,
+        value_states,
+        attention_mask,
+        scaling,
+    )
+
+    batch_size = query_states.shape[0]
+    head_dim = vlm_layer.self_attn.head_dim
+    num_heads = vlm_layer.self_attn.config.num_attention_heads
+    att_output = att_output.reshape(batch_size, -1, num_heads * head_dim)
+
+    outputs_embeds = []
+    start_pos = 0
+    for i, hidden_states in enumerate(inputs_embeds):
+        layer = models[i].layers[layer_idx]
+        end_pos = start_pos + hidden_states.shape[1]
+        current_att = att_output[:, start_pos:end_pos]
+        if current_att.dtype != layer.self_attn.o_proj.weight.dtype:
+            current_att = current_att.to(layer.self_attn.o_proj.weight.dtype)
+        out_emb = layer.self_attn.o_proj(current_att)
+        out_emb = _gated_residual(hidden_states, out_emb, gates[i])
+
+        after_first_residual = out_emb.clone()
+        if (
+            hasattr(layer.post_attention_layernorm, "conditioning_dim")
+            and layer.post_attention_layernorm.conditioning_dim is not None
+        ):
+            out_emb, gate = layer.post_attention_layernorm(out_emb, cond=adarms_cond[i])
+        else:
+            out_emb = layer.post_attention_layernorm(out_emb)
+            gate = None
+        if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
+            out_emb = out_emb.to(dtype=torch.bfloat16)
+        out_emb = layer.mlp(out_emb)
+        out_emb = _gated_residual(after_first_residual, out_emb, gate)
+        outputs_embeds.append(out_emb)
+        start_pos = end_pos
+
+    return outputs_embeds
+
+
+class PI0Model(PI0PreTrainedModel):
+    """PI0 backbone: vision tower + language model + action expert with merged attention."""
+
+    def __init__(self, config: PI0Config):
+        super().__init__(config)
+        self.vision_tower = AutoModel.from_config(config=config.vision_config)
+        self.multi_modal_projector = PI0MultiModalProjector(config)
+        self.language_model = AutoModel.from_config(config=config.text_config)
+
+        expert_config = config.expert_config
+        if config.use_adarms:
+            expert_config.use_adarms = True
+        self.expert = PI0ExpertModel(expert_config)
+
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.language_model.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        self.language_model.set_input_embeddings(value)
+
+    def get_image_features(self, pixel_values: torch.FloatTensor) -> torch.FloatTensor:
+        image_outputs = self.vision_tower(pixel_values)
+        selected_image_feature = image_outputs.last_hidden_state
+        image_features = self.multi_modal_projector(selected_image_feature)
+        image_features = image_features / (self.config.text_config.hidden_size**0.5)
+        return image_features
+
+    def embed_language_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
+        lang_emb = self.language_model.embed_tokens(tokens)
+        lang_emb_dim = lang_emb.shape[-1]
+        return lang_emb * math.sqrt(lang_emb_dim)
+
+    def forward(
+        self,
+        attention_mask: torch.Tensor,
+        position_ids: torch.LongTensor,
+        past_key_values: Cache | None,
+        inputs_embeds: list[torch.Tensor],
+        use_cache: bool = False,
+        adarms_cond: list[torch.Tensor | None] | None = None,
+    ) -> tuple[list[torch.Tensor | None], Cache | None]:
+        """Forward through merged VLM + expert layers.
+
+        Args:
+            inputs_embeds: [prefix_embeds, suffix_embeds]. Set one to None for prefix-only or suffix-only.
+            adarms_cond: [vlm_cond, expert_cond]. Conditioning for AdaRMSNorm layers.
+
+        Returns:
+            Tuple of ([prefix_output, suffix_output], past_key_values).
+        """
+        if adarms_cond is None:
+            adarms_cond = [None, None]
+
+        # Prefix-only path (cache the VLM prefix for inference)
+        if inputs_embeds[1] is None:
+            prefix_output = self.language_model(
+                inputs_embeds=inputs_embeds[0],
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+            )
+            return [prefix_output.last_hidden_state, None], prefix_output.past_key_values
+
+        # Suffix-only path (use cached prefix KV)
+        if inputs_embeds[0] is None:
+            suffix_output = self.expert(
+                inputs_embeds=inputs_embeds[1],
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                adarms_cond=adarms_cond[1],
+            )
+            return [None, suffix_output.last_hidden_state], None
+
+        # Full merged attention path (training)
+        num_layers = self.config.text_config.num_hidden_layers
+        for layer_idx in range(num_layers):
+            inputs_embeds = compute_layer_complete(
+                layer_idx,
+                inputs_embeds,
+                attention_mask,
+                position_ids,
+                adarms_cond,
+                language_model=self.language_model,
+                expert_model=self.expert,
+            )
+
+        # Final norms
+        prefix_output = self.language_model.norm(inputs_embeds[0])
+        suffix_output, _ = self.expert.norm(inputs_embeds[1], cond=adarms_cond[1])
+
+        return [prefix_output, suffix_output], None
+
+
+class PI0ForConditionalGeneration(PI0PreTrainedModel):
+    """PI0 model with action projection heads and flow matching.
+
+    Supports both PI0 (use_adarms=False) and PI0.5 (use_adarms=True) modes.
+    """
+
+
+    def __init__(self, config: PI0Config):
+        super().__init__(config)
+        self.model = PI0Model(config)
+
+        expert_hidden_size = config.expert_config.hidden_size
+
+        self.action_in_proj = nn.Linear(config.max_action_dim, expert_hidden_size)
+        self.action_out_proj = nn.Linear(expert_hidden_size, config.max_action_dim)
+
+        if not config.use_adarms:
+            # PI0 mode: state projection + action-time MLP fusion
+            self.state_proj = nn.Linear(config.max_state_dim, expert_hidden_size)
+            self.action_time_mlp_in = nn.Linear(2 * expert_hidden_size, expert_hidden_size)
+            self.action_time_mlp_out = nn.Linear(expert_hidden_size, expert_hidden_size)
+        else:
+            # PI0.5 mode: time MLP for AdaRMS conditioning
+            self.time_mlp_in = nn.Linear(expert_hidden_size, expert_hidden_size)
+            self.time_mlp_out = nn.Linear(expert_hidden_size, expert_hidden_size)
+
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        self.model.set_input_embeddings(value)
+
+    def embed_prefix(
+        self,
+        pixel_values: torch.FloatTensor,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor,
+        image_masks: torch.BoolTensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Embed images and language tokens into a prefix sequence."""
+        batch_size = input_ids.shape[0]
+        embs = []
+        pad_masks = []
+        att_masks = []
+
+        image_features = self.model.get_image_features(pixel_values)
+
+        if image_masks is not None:
+            num_cameras = image_masks.shape[1]
+            image_seq_len = image_features.shape[1] // num_cameras
+            for cam_idx in range(num_cameras):
+                cam_features = image_features[:, cam_idx * image_seq_len : (cam_idx + 1) * image_seq_len]
+                embs.append(cam_features)
+                cam_mask = image_masks[:, cam_idx]
+                pad_masks.append(cam_mask[:, None].expand(batch_size, image_seq_len))
+                att_masks += [0] * image_seq_len
+        else:
+            num_image_tokens = image_features.shape[1]
+            embs.append(image_features)
+            pad_masks.append(torch.ones(batch_size, num_image_tokens, dtype=torch.bool, device=image_features.device))
+            att_masks += [0] * num_image_tokens
+
+        lang_emb = self.model.embed_language_tokens(input_ids)
+        embs.append(lang_emb)
+        pad_masks.append(attention_mask.bool())
+        att_masks += [0] * lang_emb.shape[1]
+
+        embs = torch.cat(embs, dim=1)
+        pad_masks = torch.cat(pad_masks, dim=1)
+        att_masks = torch.tensor(att_masks, dtype=torch.bool, device=embs.device)
+        att_masks = att_masks[None, :].expand(batch_size, -1)
+
+        return embs, pad_masks, att_masks
+
+    def embed_suffix_pi0(
+        self,
+        state: torch.FloatTensor,
+        noisy_actions: torch.FloatTensor,
+        timestep: torch.FloatTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Embed suffix for PI0 mode (state + action-time fusion)."""
+        expert_hidden_size = self.action_in_proj.out_features
+
+        state_emb = self.state_proj(state.float() if self.state_proj.weight.dtype == torch.float32 else state)
+        batch_size = state_emb.shape[0]
+        device = state_emb.device
+
+        embs = [state_emb[:, None, :]]
+        pad_masks = [torch.ones(batch_size, 1, dtype=torch.bool, device=device)]
+        att_masks = [1]
+
+        time_emb = create_sinusoidal_pos_embedding(
+            timestep, expert_hidden_size, min_period=self.config.min_period, max_period=self.config.max_period
+        ).to(dtype=timestep.dtype)
+
+        action_emb = self.action_in_proj(noisy_actions)
+        time_emb_expanded = time_emb[:, None, :].expand_as(action_emb)
+        action_time_emb = torch.cat([action_emb, time_emb_expanded], dim=2)
+        action_time_emb = self.action_time_mlp_out(F.silu(self.action_time_mlp_in(action_time_emb)))
+
+        embs.append(action_time_emb)
+        pad_masks.append(torch.ones(batch_size, action_time_emb.shape[1], dtype=torch.bool, device=device))
+        att_masks += [1] + [0] * (self.config.chunk_size - 1)
+
+        embs = torch.cat(embs, dim=1)
+        pad_masks = torch.cat(pad_masks, dim=1)
+        att_masks = torch.tensor(att_masks, dtype=embs.dtype, device=device)
+        att_masks = att_masks[None, :].expand(batch_size, -1)
+
+        return embs, pad_masks, att_masks, None
+
+    def embed_suffix_pi05(
+        self,
+        noisy_actions: torch.FloatTensor,
+        timestep: torch.FloatTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Embed suffix for PI0.5 mode (action with AdaRMS time conditioning)."""
+        expert_hidden_size = self.action_in_proj.out_features
+
+        time_emb = create_sinusoidal_pos_embedding(
+            timestep, expert_hidden_size, min_period=self.config.min_period, max_period=self.config.max_period
+        ).to(dtype=timestep.dtype)
+
+        action_emb = self.action_in_proj(noisy_actions)
+
+        time_emb = F.silu(self.time_mlp_out(F.silu(self.time_mlp_in(time_emb))))
+        adarms_cond = time_emb
+
+        batch_size = action_emb.shape[0]
+        device = action_emb.device
+
+        pad_masks = torch.ones(batch_size, action_emb.shape[1], dtype=torch.bool, device=device)
+        att_masks = torch.tensor([1] + [0] * (self.config.chunk_size - 1), dtype=action_emb.dtype, device=device)
+        att_masks = att_masks[None, :].expand(batch_size, -1)
+
+        return action_emb, pad_masks, att_masks, adarms_cond
+
+    def forward(
+        self,
+        pixel_values: torch.FloatTensor,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor | None = None,
+        state: torch.FloatTensor | None = None,
+        actions: torch.FloatTensor | None = None,
+        image_masks: torch.BoolTensor | None = None,
+        noise: torch.FloatTensor | None = None,
+        timestep: torch.FloatTensor | None = None,
+    ) -> PI0Output:
+        """Training forward pass with flow matching loss.
+
+        Args:
+            pixel_values: Camera images `(batch_size, channels, height, width)` or
+                `(batch_size, num_cameras, channels, height, width)`.
+            input_ids: Language token ids `(batch_size, seq_len)`.
+            attention_mask: Language attention mask `(batch_size, seq_len)`.
+            state: Robot state `(batch_size, state_dim)`. Required for PI0 mode.
+            actions: Ground truth actions `(batch_size, chunk_size, action_dim)`.
+            image_masks: Camera validity masks `(batch_size, num_cameras)`.
+            noise: Optional pre-sampled noise matching actions shape.
+            timestep: Optional pre-sampled diffusion time `(batch_size,)`.
+        """
+        batch_size = input_ids.shape[0]
+        device = input_ids.device
+
+        if actions is None:
+            raise ValueError("actions must be provided for training. Use sample_actions for inference.")
+
+        if noise is None:
+            noise = torch.randn_like(actions)
+        if timestep is None:
+            time_beta = sample_beta(
+                self.config.time_sampling_beta_alpha, self.config.time_sampling_beta_beta, batch_size, device
+            )
+            timestep = (time_beta * self.config.time_sampling_scale + self.config.time_sampling_offset).float()
+
+        time_expanded = timestep[:, None, None]
+        noisy_actions = time_expanded * noise + (1 - time_expanded) * actions
+        target_velocity = noise - actions
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            pixel_values, input_ids, attention_mask, image_masks
+        )
+
+        if not self.config.use_adarms:
+            suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix_pi0(
+                state, noisy_actions, timestep
+            )
+        else:
+            suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix_pi05(
+                noisy_actions, timestep
+            )
+
+        if prefix_embs.dtype != suffix_embs.dtype:
+            suffix_embs = suffix_embs.to(dtype=prefix_embs.dtype)
+
+        pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+        att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+
+        att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
+        position_ids = torch.cumsum(pad_masks, dim=1) - 1
+        attention_mask_4d = prepare_attention_mask_4d(att_2d_masks, dtype=prefix_embs.dtype)
+
+        (_, suffix_out), _ = self.model(
+            attention_mask=attention_mask_4d,
+            position_ids=position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, suffix_embs],
+            use_cache=False,
+            adarms_cond=[None, adarms_cond],
+        )
+
+        suffix_out = suffix_out[:, -self.config.chunk_size :]
+        suffix_out = suffix_out.to(dtype=torch.float32)
+        predicted_velocity = self.action_out_proj(suffix_out)
+
+        loss_per_sample = F.mse_loss(target_velocity, predicted_velocity, reduction="none")
+        loss = loss_per_sample.mean()
+
+        return PI0Output(loss=loss, loss_per_sample=loss_per_sample)
+
+    @torch.no_grad()
+    def sample_actions(
+        self,
+        pixel_values: torch.FloatTensor,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor | None = None,
+        state: torch.FloatTensor | None = None,
+        image_masks: torch.BoolTensor | None = None,
+        noise: torch.FloatTensor | None = None,
+        num_steps: int | None = None,
+    ) -> torch.FloatTensor:
+        """Run flow matching inference to generate actions.
+
+        Args:
+            pixel_values: Camera images.
+            input_ids: Language token ids.
+            attention_mask: Language attention mask.
+            state: Robot state (required for PI0 mode).
+            image_masks: Camera validity masks.
+            noise: Optional initial noise.
+            num_steps: Number of denoising steps (defaults to config.num_inference_steps).
+
+        Returns:
+            Predicted actions of shape `(batch_size, chunk_size, max_action_dim)`.
+        """
+        if num_steps is None:
+            num_steps = self.config.num_inference_steps
+
+        batch_size = input_ids.shape[0]
+        device = input_ids.device
+
+        if noise is None:
+            noise = torch.randn(batch_size, self.config.chunk_size, self.config.max_action_dim, device=device)
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            pixel_values, input_ids, attention_mask, image_masks
+        )
+        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        prefix_attention_mask_4d = prepare_attention_mask_4d(prefix_att_2d_masks, dtype=prefix_embs.dtype)
+
+        _, past_key_values = self.model(
+            attention_mask=prefix_attention_mask_4d,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=True,
+        )
+
+        dt = -1.0 / num_steps
+        x_t = noise
+
+        for step in range(num_steps):
+            time = 1.0 + step * dt
+            time_tensor = torch.tensor(time, dtype=torch.float32, device=device).expand(batch_size)
+
+            if not self.config.use_adarms:
+                suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix_pi0(
+                    state, x_t, time_tensor
+                )
+            else:
+                suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix_pi05(x_t, time_tensor)
+
+            suffix_len = suffix_pad_masks.shape[1]
+            prefix_len = prefix_pad_masks.shape[1]
+
+            prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(batch_size, suffix_len, prefix_len)
+            suffix_att_2d_masks = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
+            full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
+
+            prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+            position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+
+            full_attention_mask_4d = prepare_attention_mask_4d(full_att_2d_masks, dtype=suffix_embs.dtype)
+
+            (_, suffix_out), _ = self.model(
+                attention_mask=full_attention_mask_4d,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, suffix_embs],
+                use_cache=False,
+                adarms_cond=[None, adarms_cond],
+            )
+
+            suffix_out = suffix_out[:, -self.config.chunk_size :]
+            suffix_out = suffix_out.to(dtype=torch.float32)
+            v_t = self.action_out_proj(suffix_out)
+
+            x_t = x_t + dt * v_t
+
+        return x_t
+
+
+__all__ = [
+    "PI0Config",
+    "PI0PreTrainedModel",
+    "PI0Model",
+    "PI0ForConditionalGeneration",
+    "PI0ExpertModel",
+    "PI0DecoderLayer",
+    "PI0AdaRMSNorm",
+    "PI0MultiModalProjector",
+]

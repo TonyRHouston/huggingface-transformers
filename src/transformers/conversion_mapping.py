@@ -295,6 +295,24 @@ def _build_checkpoint_conversion_mapping():
                 operations=[MergeModulelist(dim=0)],
             ),
         ],
+        "pi0": [
+            WeightRenaming(r"^paligemma_with_expert\.paligemma\.model\.vision_tower", "model.vision_tower"),
+            WeightRenaming(
+                r"^paligemma_with_expert\.paligemma\.model\.multi_modal_projector",
+                "model.multi_modal_projector",
+            ),
+            WeightRenaming(r"^paligemma_with_expert\.paligemma\.language_model", "model.language_model"),
+            WeightRenaming(r"^paligemma_with_expert\.paligemma\.model\.language_model", "model.language_model"),
+            WeightRenaming(r"^paligemma_with_expert\.paligemma\.lm_head", "model.language_model.embed_tokens"),
+            WeightRenaming(r"^paligemma_with_expert\.gemma_expert\.model", "model.expert"),
+            WeightRenaming(r"^paligemma_with_expert\.gemma_expert\.lm_head", "model.expert.embed_tokens"),
+        ],
+        "pi0_fast": [
+            WeightRenaming(r"^paligemma\.model\.vision_tower", "model.vision_tower"),
+            WeightRenaming(r"^paligemma\.model\.multi_modal_projector", "model.multi_modal_projector"),
+            WeightRenaming(r"^paligemma\.model\.language_model", "model.language_model"),
+            WeightRenaming(r"^paligemma\.lm_head", "model.language_model.embed_tokens"),
+        ],
         "timm_wrapper": [
             # Simply add the prefix `timm_model`
             # TODO: Would be probably much cleaner with a `add_prefix` argument in WeightRenaming
