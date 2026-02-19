@@ -217,7 +217,6 @@ if is_accelerate_available():
         DataLoaderConfiguration,
         DistributedDataParallelKwargs,
         DistributedType,
-        DummyScheduler,
         GradientAccumulationPlugin,
         load_fsdp_model,
         load_fsdp_optimizer,
@@ -1573,6 +1572,7 @@ class Trainer:
 
         # prepare using `accelerator` prepare
         if use_accelerator_prepare:
+            from accelerate.utils import DummyScheduler
             if delay_optimizer_creation:
                 # TODO: check if we can move this somewhere else
                 if self.is_fsdp_enabled and _is_peft_model(self.model):
