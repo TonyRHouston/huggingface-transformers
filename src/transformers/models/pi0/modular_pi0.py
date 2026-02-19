@@ -314,7 +314,6 @@ class PI0Model(PI0PreTrainedModel):
     def get_image_features(self, pixel_values: torch.FloatTensor) -> torch.FloatTensor:
         image_outputs = self.vision_tower(pixel_values)
         image_features = self.multi_modal_projector(image_outputs.last_hidden_state)
-        image_features = image_features / (self.config.text_config.hidden_size**0.5)
         return image_features
 
     def embed_language_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
