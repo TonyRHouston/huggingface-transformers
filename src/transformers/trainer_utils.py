@@ -15,6 +15,7 @@
 PyTorch-independent utilities for the Trainer class.
 """
 
+import contextlib
 import copy
 import functools
 import gc
@@ -1237,3 +1238,15 @@ def align_special_tokens(model, processing_class):
             "The model config and generation config were aligned accordingly, being updated with the tokenizer's "
             f"values. Updated tokens: {updated_tokens}."
         )
+
+
+@contextlib.contextmanager
+def suppress_progress_bars():
+    """Context manager that suppresses huggingface_hub progress bars."""
+    import huggingface_hub.utils as hf_hub_utils
+
+    hf_hub_utils.disable_progress_bars()
+    try:
+        yield
+    finally:
+        hf_hub_utils.enable_progress_bars()
