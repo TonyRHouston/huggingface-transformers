@@ -841,18 +841,15 @@ class IdeficsForVisionText2TextTest(IdeficsModelTest, GenerationTesterMixin, uni
             # Verify that the combined outputs match the full generation.
             combined_output_sequences = torch.concat([initial_output.sequences, cached_output.sequences], axis=1)
             self.assertListEqual(outputs.sequences.tolist(), combined_output_sequences.tolist())
-            # Cache values can diverge numerically in IDEFICS while producing identical continuation tokens.
-            # Check cache structure instead of strict value equality to avoid flaky failures.
-            self.assertEqual(len(outputs.past_key_values), len(cached_output.past_key_values))
-            for idx in range(len(outputs.past_key_values)):
-                self.assertEqual(
-                    outputs.past_key_values.layers[idx].keys.shape,
-                    cached_output.past_key_values.layers[idx].keys.shape,
-                )
-                self.assertEqual(
-                    outputs.past_key_values.layers[idx].values.shape,
-                    cached_output.past_key_values.layers[idx].values.shape,
-                )
+            self._check_caches_are_similar(outputs.past_key_values, cached_output.past_key_values)
+
+    def _check_caches_are_similar(self, cache1, cache2):
+        # Cache values can diverge numerically in IDEFICS while producing identical continuation tokens.
+        # Check cache structure instead of strict value equality to avoid flaky failures.
+        self.assertEqual(len(cache1), len(cache2))
+        for idx in range(len(cache1)):
+            self.assertEqual(cache1.layers[idx].keys.shape, cache2.layers[idx].keys.shape)
+            self.assertEqual(cache1.layers[idx].values.shape, cache2.layers[idx].values.shape)
 
     def _check_attentions_for_generate(
         self, batch_size, attentions, prompt_length, output_length, config, decoder_past_key_values
