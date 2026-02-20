@@ -130,28 +130,21 @@ def create_deterministic_data(batch_size, seq_len, vocab_size, device, seed):
 
 
 def gather_fsdp2_state_dict(model):
-    """Gather FSDP2 sharded parameters into full tensors via DTensor.full_tensor()."""
+    """
+    Gather FSDP2 sharded parameters into full tensors via DTensor.full_tensor().
+    Uses state_dict() instead of named_parameters() so that tied weights
+    (e.g. lm_head.weight == embed_tokens.weight) appear under both names.
+    """
     state_dict = {}
-    for name, param in model.named_parameters():
-        if isinstance(param, DTensor):
-            state_dict[name] = param.full_tensor().clone().detach()
+    for name, tensor in model.state_dict().items():
+        if isinstance(tensor, DTensor):
+            state_dict[name] = tensor.full_tensor().clone().detach()
         else:
-            state_dict[name] = param.clone().detach()
-    for name, buf in model.named_buffers():
-        if isinstance(buf, DTensor):
-            state_dict[name] = buf.full_tensor().clone().detach()
-        else:
-            state_dict[name] = buf.clone().detach()
+            state_dict[name] = tensor.clone().detach()
     return state_dict
 
 
 def compute_grad_norm(model):
-    """Compute total gradient L2 norm, gathering DTensor shards to full tensors.
-
-    clip_grad_norm_ doesn't compute correct global norms for FSDP2's sharded DTensor
-    parameters (it only sees the local shard). This function gathers full gradients
-    before computing the norm.
-    """
     total_norm_sq = 0.0
     for p in model.parameters():
         if p.grad is not None:

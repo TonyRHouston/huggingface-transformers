@@ -23,38 +23,34 @@ from ..utils.quantization_config import QuantizationMethod
 
 if TYPE_CHECKING:
     from torch import nn
+    import torch.nn as nn_module
 
 logger = logging.get_logger(__name__)
-
 
 def is_fsdp_managed_module(module: nn.Module) -> bool:
     if not is_torch_available():
         return False
-
     import torch
-
     if not torch.distributed.is_available():
         return False
-
-    import torch.distributed.fsdp
-
-    return isinstance(module, torch.distributed.fsdp.FullyShardedDataParallel) or getattr(
-        module, "_is_fsdp_managed_module", False
-    )
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel
+    except ImportError:
+        return False
+    return isinstance(module, FullyShardedDataParallel) or getattr(module, "_is_fsdp_managed_module", False)
 
 
 def is_fsdp_enabled():
-    if is_torch_available():
-        import torch
+    if not is_torch_available():
+        return False
+    import torch
+    return (
+        torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and strtobool(os.environ.get("ACCELERATE_USE_FSDP", "False")) == 1
+        and strtobool(os.environ.get("FSDP_CPU_RAM_EFFICIENT_LOADING", "False")) == 1
+    )
 
-        return (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and strtobool(os.environ.get("ACCELERATE_USE_FSDP", "False")) == 1
-            and strtobool(os.environ.get("FSDP_CPU_RAM_EFFICIENT_LOADING", "False")) == 1
-        )
-
-    return False
 
 def initialize_fsdp(
     fsdp_plan: str | dict[str, str] | None,
@@ -251,9 +247,21 @@ def apply_fsdp2(
                 "Applying FSDP only to root module."
             )
         else:
-            # Step 1: Shard input embeddings
             input_embed = getattr(model, "get_input_embeddings", lambda: None)()
-            if input_embed is not None:
+            output_embed = getattr(model, "get_output_embeddings", lambda: None)()
+            final_norm = _find_final_norm(model, decoder_layer_names)
+
+            weights_tied = (
+                input_embed is not None
+                and output_embed is not None
+                and hasattr(input_embed, "weight")
+                and hasattr(output_embed, "weight")
+                and input_embed.weight is output_embed.weight
+            )
+
+            # Step 1: Shard input embeddings (only when not tied).
+            # When tied, the shared weight is grouped with the final norm in step 3.
+            if input_embed is not None and not weights_tied:
                 fully_shard(input_embed, mesh=device_mesh, reshard_after_forward=reshard_after_forward)
                 logger.debug(f"Applied fully_shard to input embeddings ({type(input_embed).__name__})")
 
@@ -267,36 +275,36 @@ def apply_fsdp2(
             # Small optimization by forcing reshard_after_forward=False for the final norm and output head
             # Otherwise, that would mean reshard/freeing full params after the last forward and immediately re-all-gathering them in the backward pass.
             # which is wasteful. Better to keep them gathered for reuse
-
-            output_embed = getattr(model, "get_output_embeddings", lambda: None)()
-            final_norm = _find_final_norm(model, decoder_layer_names)
-
-            # When weights are tied, the output head shares its weight tensor
-            # with the input embedding. That parameter is already in the
-            # embedding's bucket, so we must not add the output head to a second bucket.
-            weights_tied = (
-                input_embed is not None
-                and output_embed is not None
-                and hasattr(input_embed, "weight")
-                and hasattr(output_embed, "weight")
-                and input_embed.weight is output_embed.weight
-            )
-
+            # Untied: [final_norm, lm_head]
+            # Tied:   [final_norm, embed_tokens] — embed_tokens.weight IS lm_head.weight,
             tail_modules = []
             if final_norm is not None:
                 tail_modules.append(final_norm)
-            if output_embed is not None and not weights_tied:
-                tail_modules.append(output_embed)
+            if weights_tied:
+                if input_embed is not None:
+                    tail_modules.append(input_embed)
+            else:
+                if output_embed is not None:
+                    tail_modules.append(output_embed)
 
             if len(tail_modules) > 1:
                 fully_shard(tail_modules, mesh=device_mesh, reshard_after_forward=False)
-                logger.debug("Applied fully_shard to [final_norm, output_head] grouped (reshard=False)")
+                logger.debug(f"Applied fully_shard to {[type(m).__name__ for m in tail_modules]} grouped (reshard=False)")
             elif len(tail_modules) == 1:
                 fully_shard(tail_modules[0], mesh=device_mesh, reshard_after_forward=False)
                 logger.debug(f"Applied fully_shard to {type(tail_modules[0]).__name__} (reshard=False)")
 
         # Step 4: Shard root model
         fully_shard(model, mesh=device_mesh, reshard_after_forward=reshard_after_forward)
+
+        # Step 5: Re-tie weights.
+        # fully_shard replaces nn.Parameter objects (swapping data for DTensor shards),
+        # which breaks weight tying (e.g. lm_head.weight is no longer embed_tokens.weight).
+        # Re-tying makes lm_head._parameters["weight"] point to the new DTensor parameter
+        # so gradients accumulate correctly into a single buffer.
+        if weights_tied and hasattr(model, "tie_weights"):
+            model.tie_weights()
+
         logger.info(
             f"FSDP2 applied to model: {len(block_classes)} block type(s), "
             f"{len(decoder_layer_names)} decoder layers"
@@ -307,8 +315,6 @@ def apply_fsdp2(
         # When a pattern matches a container (ModuleList, ModuleDict, Sequential),
         # we shard each direct child instead of the container itself (which has no
         # forward method and would be rejected by fully_shard).
-        import torch.nn as nn_module
-
         name_to_module = dict(model.named_modules())
         sharded_names: set[str] = set()
 
