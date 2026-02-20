@@ -281,27 +281,20 @@ def assert_ddp_fsdp_match(ddp_losses, ddp_grad_norms, ddp_state_dict, fsdp_losse
 
 def _test_fsdp2_sharding_structure_impl(rank, tie_word_embeddings):
     """
-    Verify that apply_fsdp2(fsdp_plan="auto") produces the same FSDP sharding
-    structure as TorchTitan's apply_fsdp.
+    Verify that apply_fsdp2(fsdp_plan="auto") wraps exactly the right modules.
 
-    TorchTitan (torchtitan/models/llama3/infra/parallelize.py) shards:
-      1. model.tok_embeddings          — own FSDP bucket
-      2. model.layers[i]               — each TransformerBlock is its own bucket
-      3. [model.norm, model.output]     — grouped bucket (reshard_after_forward=False)
-      4. model (root)                   — root bucket
+    Expected FSDP targets:
+    UNTIED                              TIED
+    ──────                              ────
+    1. embed_tokens  (reshard=True)     1. (skip — embed goes to step 3)
+    2. layers[i]     (reshard=True)     2. layers[i]     (reshard=True)
+    3. [norm, lm_head] (reshard=False)  3. [norm, embed_tokens] (reshard=False)
+    4. root                             4. root
 
-    Transformers' apply_fsdp2(fsdp_plan="auto") now mirrors this:
-      1. Input embeddings               — own bucket
-      2. Each decoder layer             — own bucket
-      3. [final norm, output head]      — grouped bucket (reshard_after_forward=False)
-         (when tied, output head is excluded — its weight is in the embedding's bucket)
-      4. Root model                     — root bucket
-
-    We detect directly-sharded modules via the FSDP2 dynamic class swap: when
-    fully_shard(module) is called, module.__class__ is swapped to an
-    FSDP-prefixed class (e.g. LlamaDecoderLayer -> FSDPLlamaDecoderLayer).
-    Child modules that were NOT directly passed to fully_shard keep their
-    original class.
+    Detection: fully_shard(module) swaps module.__class__ to an FSDP-prefixed
+    class (e.g. LlamaDecoderLayer → FSDPLlamaDecoderLayer). We collect all
+    modules whose class name starts with "FSDP" and compare against the
+    expected set.
     """
     init_test_logger()
 
@@ -313,24 +306,22 @@ def _test_fsdp2_sharding_structure_impl(rank, tie_word_embeddings):
     set_seed(SEED)
     model = AutoModelForCausalLM.from_config(config).to(device_map)
 
-    # --- Before FSDP: record the expected targets ---
+    # --- Before FSDP: build the expected set of FSDP target names ---
     block_classes = get_transformer_block_classes(model)
     assert block_classes, "get_transformer_block_classes found no block classes"
 
-    decoder_layer_names = set()
-    for name, module in model.named_modules():
-        if type(module) in block_classes:
-            decoder_layer_names.add(name)
+    decoder_layer_names = {
+        name for name, module in model.named_modules() if type(module) in block_classes
+    }
+    assert len(decoder_layer_names) == config.num_hidden_layers
 
-    assert len(decoder_layer_names) == config.num_hidden_layers, (
-        f"Expected {config.num_hidden_layers} decoder layers, "
-        f"detected {len(decoder_layer_names)}: {sorted(decoder_layer_names)}"
-    )
+    # Resolve module names via id() since get_input_embeddings() etc. return
+    # the module object, not its name in the module tree.
+    id_to_name = {id(module): name for name, module in model.named_modules()}
 
     input_embed = model.get_input_embeddings()
     output_embed = model.get_output_embeddings()
     final_norm = _find_final_norm(model, decoder_layer_names)
-
     weights_tied = (
         input_embed is not None
         and output_embed is not None
@@ -339,99 +330,45 @@ def _test_fsdp2_sharding_structure_impl(rank, tie_word_embeddings):
         and input_embed.weight is output_embed.weight
     )
 
-    # Build name -> module mapping for identity checks after FSDP
-    module_ids_before = {}
-    for name, module in model.named_modules():
-        module_ids_before[id(module)] = name
+    embed_name = id_to_name.get(id(input_embed))
+    output_name = id_to_name.get(id(output_embed))
+    norm_name = id_to_name.get(id(final_norm))
 
-    embed_name = module_ids_before.get(id(input_embed))
-    output_name = module_ids_before.get(id(output_embed))
-    norm_name = module_ids_before.get(id(final_norm))
+    # Build expected set using set union (|) operator:
+    # {"a"} | {"b"} == {"a", "b"}
+    expected_targets = (
+        {""}                     # root
+        | decoder_layer_names    # each decoder layer
+        | {embed_name}           # embeddings (always — own bucket or grouped with norm)
+        | {norm_name}            # final norm
+    )
+    if not weights_tied:
+        # Untied: lm_head gets its own FSDP wrap (grouped with norm)
+        expected_targets |= {output_name}
+    # Tied: lm_head.weight IS embed_tokens.weight → already in [embed, norm] bucket
 
-    # --- Apply FSDP2 ---
     model = apply_fsdp2(model, device_mesh, fsdp_plan="auto")
 
-    # --- After FSDP: collect modules that got the FSDP dynamic class swap ---
-    fsdp_targets = {}
-    for name, module in model.named_modules():
-        cls_name = type(module).__name__
-        if cls_name.startswith("FSDP"):
-            fsdp_targets[name] = cls_name
+    actual_targets = {
+        name for name, module in model.named_modules()
+        if type(module).__name__.startswith("FSDP")
+    }
 
     if rank == 0:
-        logger.info(f"  Block classes detected: {[c.__name__ for c in block_classes]}")
         logger.info(f"  Weights tied: {weights_tied}")
-        logger.info(f"  FSDP targets: {fsdp_targets}")
+        logger.info(f"  Expected FSDP targets: {sorted(expected_targets)}")
+        logger.info(f"  Actual FSDP targets:   {sorted(actual_targets)}")
 
-    # CHECK 1: Every decoder layer must be a direct fully_shard target
-    for layer_name in decoder_layer_names:
-        assert layer_name in fsdp_targets, (
-            f"Decoder layer '{layer_name}' was not wrapped with fully_shard. "
-            f"FSDP targets: {sorted(fsdp_targets.keys())}"
-        )
-
-    # CHECK 2: Root model must be a direct fully_shard target
-    assert "" in fsdp_targets, (
-        f"Root model was not wrapped with fully_shard. "
-        f"FSDP targets: {sorted(fsdp_targets.keys())}"
-    )
-
-    # CHECK 3: Input embeddings sharding depends on weight tying.
-    # When tied, the embedding cannot be sharded separately (it would break the
-    # tie with lm_head), so the shared parameter falls into the root bucket.
-    if not weights_tied:
-        assert embed_name is not None and embed_name in fsdp_targets, (
-            f"Input embeddings '{embed_name}' was not wrapped with fully_shard. "
-            f"FSDP targets: {sorted(fsdp_targets.keys())}"
-        )
-    else:
-        assert embed_name not in fsdp_targets, (
-            f"Input embeddings '{embed_name}' was wrapped with fully_shard but weights "
-            f"are tied — the shared parameter should be in the root bucket. "
-            f"FSDP targets: {sorted(fsdp_targets.keys())}"
-        )
-
-    # CHECK 4: Final norm must be a direct fully_shard target
-    assert norm_name is not None and norm_name in fsdp_targets, (
-        f"Final norm '{norm_name}' was not wrapped with fully_shard. "
-        f"FSDP targets: {sorted(fsdp_targets.keys())}"
-    )
-
-    # CHECK 5: Output head sharding depends on weight tying.
-    # When tied, lm_head.weight is the same parameter as embed_tokens.weight —
-    # it must not be separately sharded.
-    if not weights_tied:
-        assert output_name is not None and output_name in fsdp_targets, (
-            f"Output head '{output_name}' was not wrapped with fully_shard "
-            f"(weights are not tied). FSDP targets: {sorted(fsdp_targets.keys())}"
-        )
-    else:
-        assert output_name not in fsdp_targets, (
-            f"Output head '{output_name}' was wrapped with fully_shard but weights "
-            f"are tied — its weight should be in the root bucket. "
-            f"FSDP targets: {sorted(fsdp_targets.keys())}"
-        )
-
-    # CHECK 6: No sub-block modules should be separate FSDP targets.
-    # Modules nested inside a decoder layer (e.g. self_attn, mlp, individual
-    # Linear layers) must NOT have their own class swap — they belong to
-    # the decoder layer's communication bucket, not their own.
-    sub_block_targets = [
-        name for name in fsdp_targets
-        if name != "" and name not in decoder_layer_names
-        and any(name.startswith(layer + ".") for layer in decoder_layer_names)
-    ]
-    assert not sub_block_targets, (
-        f"Sub-block modules were sharded as separate FSDP units "
-        f"(should be part of their decoder layer's bucket): {sub_block_targets}"
+    missing = expected_targets - actual_targets
+    extra = actual_targets - expected_targets
+    assert not missing and not extra, (
+        f"FSDP target mismatch.\n"
+        f"  Missing (expected but not wrapped): {sorted(missing)}\n"
+        f"  Extra (wrapped but not expected):   {sorted(extra)}"
     )
 
     if rank == 0:
-        logger.info(
-            f"  FSDP sharding structure OK: embeddings + "
-            f"{len(decoder_layer_names)} decoder layers + "
-            f"norm/output + root ({len(fsdp_targets)} total FSDP targets)"
-        )
+        logger.info(f"  FSDP sharding structure OK ({len(actual_targets)} targets)")
 
 
 @pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
