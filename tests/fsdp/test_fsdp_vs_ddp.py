@@ -20,6 +20,7 @@ Run:
 
 import logging
 import os
+import socket
 
 import pytest
 
@@ -27,7 +28,6 @@ from transformers import AutoConfig, AutoModelForCausalLM, is_torch_available
 from transformers.testing_utils import (
     Colors,
     backend_device_count,
-    get_torch_dist_unique_port,
     init_test_logger,
     require_fsdp,
     require_torch_multi_accelerator,
@@ -88,12 +88,19 @@ def global_wrapper(rank, func, world_size, port, func_args, func_kwargs):
     dist.destroy_process_group()
 
 
+def _get_free_port():
+    """Find a free port by binding to port 0 and letting the OS assign one."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
 def init_distributed(world_size: int):
     """Decorator to run function in distributed mode using mp.spawn."""
 
     def _init_distributed(func):
         def wrapper(*args, **kwargs):
-            port = get_torch_dist_unique_port()
+            port = _get_free_port()
             spawn_args = (func, world_size, port, args, kwargs)
             mp.spawn(global_wrapper, args=spawn_args, nprocs=world_size)
 
@@ -272,7 +279,7 @@ def assert_ddp_fsdp_match(ddp_losses, ddp_grad_norms, ddp_state_dict, fsdp_losse
 # =============================================================================
 
 
-def _test_fsdp2_sharding_structure_impl(rank):
+def _test_fsdp2_sharding_structure_impl(rank, tie_word_embeddings):
     """
     Verify that apply_fsdp2(fsdp_plan="auto") produces the same FSDP sharding
     structure as TorchTitan's apply_fsdp.
@@ -287,6 +294,7 @@ def _test_fsdp2_sharding_structure_impl(rank):
       1. Input embeddings               — own bucket
       2. Each decoder layer             — own bucket
       3. [final norm, output head]      — grouped bucket (reshard_after_forward=False)
+         (when tied, output head is excluded — its weight is in the embedding's bucket)
       4. Root model                     — root bucket
 
     We detect directly-sharded modules via the FSDP2 dynamic class swap: when
@@ -298,6 +306,7 @@ def _test_fsdp2_sharding_structure_impl(rank):
     init_test_logger()
 
     config = AutoConfig.from_pretrained(MODEL_NAME)
+    config.tie_word_embeddings = tie_word_embeddings
 
     device_map, device_mesh, _ = initialize_fsdp(fsdp_plan="auto")
 
@@ -367,11 +376,20 @@ def _test_fsdp2_sharding_structure_impl(rank):
         f"FSDP targets: {sorted(fsdp_targets.keys())}"
     )
 
-    # CHECK 3: Input embeddings must be a direct fully_shard target
-    assert embed_name is not None and embed_name in fsdp_targets, (
-        f"Input embeddings '{embed_name}' was not wrapped with fully_shard. "
-        f"FSDP targets: {sorted(fsdp_targets.keys())}"
-    )
+    # CHECK 3: Input embeddings sharding depends on weight tying.
+    # When tied, the embedding cannot be sharded separately (it would break the
+    # tie with lm_head), so the shared parameter falls into the root bucket.
+    if not weights_tied:
+        assert embed_name is not None and embed_name in fsdp_targets, (
+            f"Input embeddings '{embed_name}' was not wrapped with fully_shard. "
+            f"FSDP targets: {sorted(fsdp_targets.keys())}"
+        )
+    else:
+        assert embed_name not in fsdp_targets, (
+            f"Input embeddings '{embed_name}' was wrapped with fully_shard but weights "
+            f"are tied — the shared parameter should be in the root bucket. "
+            f"FSDP targets: {sorted(fsdp_targets.keys())}"
+        )
 
     # CHECK 4: Final norm must be a direct fully_shard target
     assert norm_name is not None and norm_name in fsdp_targets, (
@@ -379,11 +397,19 @@ def _test_fsdp2_sharding_structure_impl(rank):
         f"FSDP targets: {sorted(fsdp_targets.keys())}"
     )
 
-    # CHECK 5: Output head must be sharded if weights are NOT tied
+    # CHECK 5: Output head sharding depends on weight tying.
+    # When tied, lm_head.weight is the same parameter as embed_tokens.weight —
+    # it must not be separately sharded.
     if not weights_tied:
         assert output_name is not None and output_name in fsdp_targets, (
             f"Output head '{output_name}' was not wrapped with fully_shard "
             f"(weights are not tied). FSDP targets: {sorted(fsdp_targets.keys())}"
+        )
+    else:
+        assert output_name not in fsdp_targets, (
+            f"Output head '{output_name}' was wrapped with fully_shard but weights "
+            f"are tied — its weight should be in the root bucket. "
+            f"FSDP targets: {sorted(fsdp_targets.keys())}"
         )
 
     # CHECK 6: No sub-block modules should be separate FSDP targets.
@@ -409,12 +435,16 @@ def _test_fsdp2_sharding_structure_impl(rank):
 
 
 @pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
+@pytest.mark.parametrize(
+    "tie_word_embeddings",
+    [pytest.param(False, id="untied"), pytest.param(True, id="tied")],
+)
 @require_fsdp
 @require_torch_multi_accelerator
-def test_fsdp2_sharding_structure(nproc_per_node):
+def test_fsdp2_sharding_structure(nproc_per_node, tie_word_embeddings):
     """Verify per-decoder-layer FSDP sharding matches TorchTitan's granularity."""
     skip_if_insufficient_devices(nproc_per_node)
-    init_distributed(world_size=nproc_per_node)(_test_fsdp2_sharding_structure_impl)()
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_sharding_structure_impl)(tie_word_embeddings)
 
 
 # =============================================================================
@@ -422,12 +452,13 @@ def test_fsdp2_sharding_structure(nproc_per_node):
 # =============================================================================
 
 
-def _test_fsdp2_auto_plan_vs_ddp_impl(rank, dtype):
+def _test_fsdp2_auto_plan_vs_ddp_impl(rank, dtype, tie_word_embeddings):
     """Compare losses, grad norms, and final weights between DDP and FSDP2."""
     init_test_logger()
 
     device = torch.device(f"cuda:{rank}")
     config = AutoConfig.from_pretrained(MODEL_NAME)
+    config.tie_word_embeddings = tie_word_embeddings
 
     batches = create_deterministic_data(BATCH_SIZE, SEQ_LEN, config.vocab_size, device, seed=SEED)
     batches = batches * NUM_STEPS
@@ -455,15 +486,19 @@ def _test_fsdp2_auto_plan_vs_ddp_impl(rank, dtype):
 
 @pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
 @pytest.mark.parametrize(
+    "tie_word_embeddings",
+    [pytest.param(False, id="untied"), pytest.param(True, id="tied")],
+)
+@pytest.mark.parametrize(
     "dtype",
     [pytest.param(torch.float32, id="float32"), pytest.param(torch.bfloat16, id="bfloat16")],
 )
 @require_fsdp
 @require_torch_multi_accelerator
-def test_fsdp2_auto_plan_vs_ddp(nproc_per_node, dtype):
+def test_fsdp2_auto_plan_vs_ddp(nproc_per_node, tie_word_embeddings, dtype):
     """20-step Adam: compare per-step losses, grad norms, and final weights."""
     skip_if_insufficient_devices(nproc_per_node)
-    init_distributed(world_size=nproc_per_node)(_test_fsdp2_auto_plan_vs_ddp_impl)(dtype)
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_auto_plan_vs_ddp_impl)(dtype, tie_word_embeddings)
 
 
 # =============================================================================
@@ -471,12 +506,13 @@ def test_fsdp2_auto_plan_vs_ddp(nproc_per_node, dtype):
 # =============================================================================
 
 
-def _test_fsdp2_manual_plan_vs_ddp_impl(rank, dtype):
+def _test_fsdp2_manual_plan_vs_ddp_impl(rank, dtype, tie_word_embeddings):
     """Compare losses, grad norms, and final weights between DDP and FSDP2 with a manual fsdp_plan dict."""
     init_test_logger()
 
     device = torch.device(f"cuda:{rank}")
     config = AutoConfig.from_pretrained(MODEL_NAME)
+    config.tie_word_embeddings = tie_word_embeddings
 
     batches = create_deterministic_data(BATCH_SIZE, SEQ_LEN, config.vocab_size, device, seed=SEED)
     batches = batches * NUM_STEPS
@@ -485,12 +521,15 @@ def _test_fsdp2_manual_plan_vs_ddp_impl(rank, dtype):
 
     dist.barrier()
 
+    # When weights are tied, lm_head shares its weight with embed_tokens —
+    # it must NOT appear in the plan (the weight is already in the embedding's bucket).
     fsdp_plan = {
         "model.embed_tokens": "reshard",
         "model.layers": "reshard",
         "model.norm": "no_reshard",
-        "lm_head": "no_reshard",
     }
+    if not tie_word_embeddings:
+        fsdp_plan["lm_head"] = "no_reshard"
 
     device_map, device_mesh, _ = initialize_fsdp(fsdp_plan=fsdp_plan)
     fsdp_losses, fsdp_grad_norms, fsdp_state_dict = train_fsdp2(
@@ -515,15 +554,19 @@ def _test_fsdp2_manual_plan_vs_ddp_impl(rank, dtype):
 
 @pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
 @pytest.mark.parametrize(
+    "tie_word_embeddings",
+    [pytest.param(False, id="untied"), pytest.param(True, id="tied")],
+)
+@pytest.mark.parametrize(
     "dtype",
     [pytest.param(torch.float32, id="float32"), pytest.param(torch.bfloat16, id="bfloat16")],
 )
 @require_fsdp
 @require_torch_multi_accelerator
-def test_fsdp2_manual_plan_vs_ddp(nproc_per_node, dtype):
+def test_fsdp2_manual_plan_vs_ddp(nproc_per_node, tie_word_embeddings, dtype):
     """20-step Adam with manual fsdp_plan dict: compare per-step losses, grad norms, and final weights."""
     skip_if_insufficient_devices(nproc_per_node)
-    init_distributed(world_size=nproc_per_node)(_test_fsdp2_manual_plan_vs_ddp_impl)(dtype)
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_manual_plan_vs_ddp_impl)(dtype, tie_word_embeddings)
 
 
 # =============================================================================
