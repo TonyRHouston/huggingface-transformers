@@ -46,7 +46,7 @@ class CacheLayerMixin(ABC):
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
     @abstractmethod
-    def get_mask_sizes(self, cache_position: torch.Tensor) -> tuple[int, int]: ...
+    def get_mask_sizes(self, query_length: int) -> tuple[int, int]: ...
 
     @abstractmethod
     def get_seq_length(self) -> int: ...
@@ -121,10 +121,9 @@ class DynamicLayer(CacheLayerMixin):
         self.values = torch.cat([self.values, value_states], dim=-2)
         return self.keys, self.values
 
-    def get_mask_sizes(self, cache_position: torch.Tensor) -> tuple[int, int]:
+    def get_mask_sizes(self, query_length: int) -> tuple[int, int]:
         """Return the length and offset of the cache, used to generate the mask"""
         kv_offset = 0
-        query_length = cache_position.shape[0]
         kv_length = self.get_seq_length() + query_length
         return kv_length, kv_offset
 
@@ -216,9 +215,8 @@ class DynamicSlidingWindowLayer(DynamicLayer):
         # Return the full states
         return full_key_states, full_value_states
 
-    def get_mask_sizes(self, cache_position: torch.Tensor) -> tuple[int, int]:
+    def get_mask_sizes(self, query_length: int) -> tuple[int, int]:
         """Return the length and offset of the cache, used to generate the attention mask"""
-        query_length = cache_position.shape[0]
         is_full = self.cumulative_length >= self.sliding_window
 
         kv_offset = max(self.cumulative_length - self.sliding_window + 1, 0)
@@ -345,7 +343,7 @@ class StaticLayer(CacheLayerMixin):
             self.values[:, :, cache_position] = value_states
         return self.keys, self.values
 
-    def get_mask_sizes(self, cache_position: torch.Tensor) -> tuple[int, int]:
+    def get_mask_sizes(self, query_length: int) -> tuple[int, int]:
         """Return the length and offset of the cache, used to generate the attention mask"""
         kv_offset = 0
         kv_length = self.max_cache_len
@@ -463,9 +461,8 @@ class StaticSlidingWindowLayer(StaticLayer):
         # we should return the whole states instead of `self.keys/values` here, as otherwise we lose some context
         return full_key_states, full_value_states
 
-    def get_mask_sizes(self, cache_position: torch.Tensor) -> tuple[int, int]:
+    def get_mask_sizes(self, query_length: int) -> tuple[int, int]:
         """Return the length and offset of the cache, used to generate the attention mask"""
-        query_length = cache_position.shape[0]
         sliding_window = self.max_cache_len
         is_full = self.cumulative_length >= self.max_cache_len
 
@@ -817,17 +814,17 @@ class Cache:
             return 0
         return self.layers[layer_idx].get_seq_length()
 
-    def get_mask_sizes(self, cache_position: torch.Tensor, layer_idx: int) -> tuple[int, int]:
+    def get_mask_sizes(self, query_length: int, layer_idx: int) -> tuple[int, int]:
         """
         Return a tuple (kv_length, kv_offset) corresponding to the length and offset that will be returned for
         the given layer at `layer_idx`.
         The masks are then prepared according to the given lengths (kv_length, kv_offset) and patterns for each layer.
         """
         # For DynamicCache, where the layers are created at runtime -> if it was not yet created, the size is
-        # simply the shape of `cache_position`
+        # simply the query_length
         if layer_idx >= len(self.layers):
-            return cache_position.shape[0], 0
-        return self.layers[layer_idx].get_mask_sizes(cache_position)
+            return query_length, 0
+        return self.layers[layer_idx].get_mask_sizes(query_length)
 
     def get_max_cache_shape(self, layer_idx: int = 0) -> int:
         """Returns maximum sequence length of the cache object. Dynamic caches do not have a maximum length."""
@@ -1278,8 +1275,8 @@ class EncoderDecoderCache(Cache):
         """Returns the maximum sequence length (i.e. max capacity) of the cache object"""
         return self.self_attention_cache.get_max_cache_shape()
 
-    def get_mask_sizes(self, cache_position: torch.Tensor, layer_idx: int) -> tuple[int, int]:
-        return self.self_attention_cache.get_mask_sizes(cache_position, layer_idx)
+    def get_mask_sizes(self, query_length: int, layer_idx: int) -> tuple[int, int]:
+        return self.self_attention_cache.get_mask_sizes(query_length, layer_idx)
 
     @property
     def is_sliding(self):
