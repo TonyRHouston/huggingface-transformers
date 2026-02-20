@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import Any
 
 import torch
 
@@ -42,7 +41,7 @@ class CacheLayerMixin(ABC):
 
     @abstractmethod
     def update(
-        self, key_states: torch.Tensor, value_states: torch.Tensor, cache_kwargs: dict[str, Any] | None = None
+        self, key_states: torch.Tensor, value_states: torch.Tensor, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
     @abstractmethod
@@ -97,10 +96,7 @@ class DynamicLayer(CacheLayerMixin):
         self.is_initialized = True
 
     def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cache_kwargs: dict[str, Any] | None = None,
+        self, key_states: torch.Tensor, value_states: torch.Tensor, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Update the key and value caches in-place, and return the necessary keys and value states.
@@ -108,7 +104,6 @@ class DynamicLayer(CacheLayerMixin):
         Args:
             key_states (`torch.Tensor`): The new key states to cache.
             value_states (`torch.Tensor`): The new value states to cache.
-            cache_kwargs (`dict[str, Any]`, *optional*): Additional arguments for the cache.
 
         Returns:
             tuple[`torch.Tensor`, `torch.Tensor`]: The key and value states.
@@ -183,10 +178,7 @@ class DynamicSlidingWindowLayer(DynamicLayer):
         self._sliding_window_tensor = self._sliding_window_tensor.to(self.device)
 
     def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cache_kwargs: dict[str, Any] | None = None,
+        self, key_states: torch.Tensor, value_states: torch.Tensor, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Update the key and value caches in-place, and return the necessary keys and value states.
@@ -194,7 +186,6 @@ class DynamicSlidingWindowLayer(DynamicLayer):
         Args:
             key_states (`torch.Tensor`): The new key states to cache.
             value_states (`torch.Tensor`): The new value states to cache.
-            cache_kwargs (`dict[str, Any]`, *optional*): Additional arguments for the cache.
 
         Returns:
             tuple[`torch.Tensor`, `torch.Tensor`]: The key and value states.
@@ -265,6 +256,7 @@ class StaticLayer(CacheLayerMixin):
     def __init__(self, max_cache_len: int):
         super().__init__()
         self.max_cache_len = max_cache_len
+        self.cumulative_length = 0
 
     def lazy_initialization(self, key_states: torch.Tensor, value_states: torch.Tensor) -> None:
         """
@@ -306,10 +298,7 @@ class StaticLayer(CacheLayerMixin):
         self.is_initialized = True
 
     def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cache_kwargs: dict[str, Any] | None = None,
+        self, key_states: torch.Tensor, value_states: torch.Tensor, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Update the key and value caches in-place, and return the necessary keys and value states.
@@ -317,7 +306,6 @@ class StaticLayer(CacheLayerMixin):
         Args:
             key_states (`torch.Tensor`): The new key states to cache.
             value_states (`torch.Tensor`): The new value states to cache.
-            cache_kwargs (`dict[str, Any]`, *optional*): Additional arguments for the cache.
 
         Returns:
             tuple[`torch.Tensor`, `torch.Tensor`]: The key and value states.
@@ -326,12 +314,10 @@ class StaticLayer(CacheLayerMixin):
         if not self.is_initialized:
             self.lazy_initialization(key_states, value_states)
 
-        # Some old models give None for `cache_position` or even omit passing `cache_kwargs` when used as cross-attention,
-        # in which case we should copy the whole Layer (key_states.shape[-2] == self.max_cache_len)
-        cache_position = cache_kwargs.get("cache_position") if cache_kwargs is not None else None
-        cache_position = (
-            cache_position if cache_position is not None else torch.arange(key_states.shape[-2], device=self.device)
-        )
+        # Create a tensor to slice the static kv at the correct indices
+        kv_length = key_states.shape[-2]
+        cache_position = torch.arange(kv_length, device=self.device) + self.cumulative_length
+        self.cumulative_length += kv_length
 
         # Update the cache
         try:
@@ -381,10 +367,7 @@ class StaticSlidingWindowLayer(StaticLayer):
         self.cumulative_length = 0
 
     def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cache_kwargs: dict[str, Any] | None = None,
+        self, key_states: torch.Tensor, value_states: torch.Tensor, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Update the key and value caches in-place, and return the necessary keys and value states.
@@ -392,7 +375,6 @@ class StaticSlidingWindowLayer(StaticLayer):
         Args:
             key_states (`torch.Tensor`): The new key states to cache.
             value_states (`torch.Tensor`): The new value states to cache.
-            cache_kwargs (`dict[str, Any]`, *optional*): Additional arguments for the cache.
 
         Returns:
             tuple[`torch.Tensor`, `torch.Tensor`]: The key and value states.
@@ -401,17 +383,14 @@ class StaticSlidingWindowLayer(StaticLayer):
         if not self.is_initialized:
             self.lazy_initialization(key_states, value_states)
 
-        # Some old models give None for `cache_position` or even omit passing `cache_kwargs` when used as cross-attention,
-        # in which case we should copy the whole Layer (key_states.shape[-2] == self.max_cache_len)
-        cache_position = cache_kwargs.get("cache_position") if cache_kwargs is not None else None
-        cache_position = (
-            cache_position if cache_position is not None else torch.arange(key_states.shape[-2], device=self.device)
-        )
+        # Create a tensor to slice the static kv at the correct indices
+        kv_length = key_states.shape[-2]
+        cache_position = torch.arange(kv_length, device=self.device) + self.cumulative_length
 
         cumulative_length = self.cumulative_length
         is_full = cumulative_length >= self.max_cache_len
         # Update it now that we saved the value above
-        self.cumulative_length += key_states.shape[-2]
+        self.cumulative_length += kv_length
 
         if is_full:
             # In general, we should use a much simpler `cat` here as well, independently of the states size. However,
@@ -513,10 +492,7 @@ class QuantizedLayer(DynamicLayer):
         self.cumulative_length = 0
 
     def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cache_kwargs: dict[str, Any] | None = None,
+        self, key_states: torch.Tensor, value_states: torch.Tensor, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Update the key and value caches in-place, and return the necessary keys and value states.
@@ -524,7 +500,6 @@ class QuantizedLayer(DynamicLayer):
         Args:
             key_states (`torch.Tensor`): The new key states to cache.
             value_states (`torch.Tensor`): The new value states to cache.
-            cache_kwargs (`dict[str, Any]`, *optional*): Additional arguments for the cache.
 
         Returns:
             tuple[`torch.Tensor`, `torch.Tensor`]: The key and value states.
@@ -753,11 +728,7 @@ class Cache:
             self.layers[layer_idx].offload()
 
     def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        layer_idx: int,
-        cache_kwargs: dict[str, Any] | None = None,
+        self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Updates the cache with the new `key_states` and `value_states` for the layer `layer_idx`.
@@ -769,9 +740,6 @@ class Cache:
                 The new value states to cache.
             layer_idx (`int`):
                 The index of the layer to cache the states for.
-            cache_kwargs (`dict[str, Any]`, *optional*):
-                Additional arguments for the cache subclass. These are specific to each subclass and allow new types of
-                cache to be created.
 
         Return:
             A tuple containing the updated key and value states.
@@ -786,7 +754,7 @@ class Cache:
             torch.cuda.default_stream(key_states.device).wait_stream(self.prefetch_stream)
             self.prefetch(layer_idx + 1, self.only_non_sliding)
 
-        keys, values = self.layers[layer_idx].update(key_states, value_states, cache_kwargs)
+        keys, values = self.layers[layer_idx].update(key_states, value_states, **kwargs)
 
         if self.offloading:
             self.offload(layer_idx, self.only_non_sliding)
