@@ -22,8 +22,7 @@ from ..utils.quantization_config import QuantizationMethod
 
 
 if TYPE_CHECKING:
-    from torch import nn
-    import torch.nn as nn_module
+    import torch.nn as nn
 
 logger = logging.get_logger(__name__)
 
@@ -182,33 +181,22 @@ def apply_fsdp2(
     model,
     device_mesh,
     fsdp_plan: str | dict[str, str] = "auto",
-    reshard_after_forward: bool = True,
 ):
     """
     Apply FSDP2 (fully_shard) to a model following TorchTitan's approach.
-    Args:
-        model: The model to shard with FSDP2.
-        device_mesh: The DeviceMesh for FSDP (1D for pure FSDP, 2D for HSDP).
-        fsdp_plan: Either ``"auto"`` for automatic block detection, or a dict
-            mapping module name patterns to sharding strategies.
+    fsdp_plan: Either ``"auto"`` for automatic block detection, or a dict
+        mapping module name patterns to sharding strategies.
 
-            Example: shard each decoder layer normally, but keep the output
-            head gathered after forward::
-
-                fsdp_plan = {
-                    "model.layers": "reshard",      # each layer whose name contains "model.layers"
-                    "lm_head": "no_reshard",         # output head keeps params gathered
-                    "model.embed_tokens": "reshard", # embedding
-                }
-
-        reshard_after_forward: If True (default), parameters are resharded after forward
-                               pass (ZeRO-3 style). If False, parameters stay gathered
-                               (ZeRO-2 style). Only used for the root module and as default
-                               for ``"auto"`` mode; ignored when ``fsdp_plan`` is a dict
-                               (each entry specifies its own strategy).
-
-    Returns:
-        The FSDP-wrapped model.
+        #TODO(3outeille): maybe specify list for CPUOffloadPolicy and MixedPrecisionPolicy? (i.e: "model.layers.0.self_attn": ["free_full_weight", "cpu_offload", "mixed_precision"])
+        fsdp_plan = {
+            "model.embed_tokens": "free_full_weight",        # free full weight after forward
+            "model.layers.0.self_attn": "free_full_weight",  # free full weight after forward
+            "model.layers.0.mlp": "free_full_weight",        # free full weight after forward
+            "model.layers.1.self_attn": "free_full_weight",  # free full weight after forward
+            "model.layers.1.mlp": "free_full_weight",        # free full weight after forward
+            "model.norm": "keep_full_weight",                # keep full weight until backward
+            "lm_head": "keep_full_weight",                   # keep full weight until backward
+        }
     """
     if not is_torch_available():
         raise ImportError("PyTorch is required for FSDP support")
@@ -262,17 +250,17 @@ def apply_fsdp2(
             # Step 1: Shard input embeddings (only when not tied).
             # When tied, the shared weight is grouped with the final norm in step 3.
             if input_embed is not None and not weights_tied:
-                fully_shard(input_embed, mesh=device_mesh, reshard_after_forward=reshard_after_forward)
+                fully_shard(input_embed, mesh=device_mesh, reshard_after_forward=True)
                 logger.debug(f"Applied fully_shard to input embeddings ({type(input_embed).__name__})")
 
             # Step 2: Shard each decoder layer block
             for name, module in model.named_modules():
                 if type(module) in block_classes:
-                    fully_shard(module, mesh=device_mesh, reshard_after_forward=reshard_after_forward)
+                    fully_shard(module, mesh=device_mesh, reshard_after_forward=True)
                     logger.debug(f"Applied fully_shard to {name} ({type(module).__name__})")
 
             # Step 3: Group final norm + output head
-            # Small optimization by forcing reshard_after_forward=False for the final norm and output head
+            # NOTE(3outeille): Small optimization by forcing reshard_after_forward=False for the final norm and output head
             # Otherwise, that would mean reshard/freeing full params after the last forward and immediately re-all-gathering them in the backward pass.
             # which is wasteful. Better to keep them gathered for reuse
             # Untied: [final_norm, lm_head]
@@ -295,7 +283,7 @@ def apply_fsdp2(
                 logger.debug(f"Applied fully_shard to {type(tail_modules[0]).__name__} (reshard=False)")
 
         # Step 4: Shard root model
-        fully_shard(model, mesh=device_mesh, reshard_after_forward=reshard_after_forward)
+        fully_shard(model, mesh=device_mesh, reshard_after_forward=True)
 
         # Step 5: Re-tie weights.
         # fully_shard replaces nn.Parameter objects (swapping data for DTensor shards),
@@ -312,58 +300,53 @@ def apply_fsdp2(
 
     elif isinstance(fsdp_plan, dict):
         # Apply fully_shard based on explicit plan.
-        # When a pattern matches a container (ModuleList, ModuleDict, Sequential),
-        # we shard each direct child instead of the container itself (which has no
-        # forward method and would be rejected by fully_shard).
+        #
+        # Each key is a module name (or prefix), and the value controls whether
+        # the all-gathered full weight is freed after forward:
+        # (ModuleList, ModuleDict, Sequential) don't have a forward()
+        # that gets called — the model loops over their children directly.
+        # So when a pattern matches a container, we shard each child instead.
+
         name_to_module = dict(model.named_modules())
-        sharded_names: set[str] = set()
+        sharded: set[str] = set()
 
-        for module_pattern, strategy in fsdp_plan.items():
-            reshard = strategy != "no_reshard"
+        def _shard(name: str, module, reshard: bool):
+            if name not in sharded:
+                fully_shard(module, mesh=device_mesh, reshard_after_forward=reshard)
+                sharded.add(name)
+                logger.debug(f"Applied fully_shard to {name}")
 
-            if module_pattern in name_to_module:
-                target = name_to_module[module_pattern]
+        for pattern, strategy in fsdp_plan.items():
+            reshard = strategy != "keep_full_weight"
 
-                if isinstance(target, (nn_module.ModuleList, nn_module.ModuleDict, nn_module.Sequential)):
-                    # Container: shard each direct child
-                    for child_name, child_module in target.named_children():
-                        full_name = f"{module_pattern}.{child_name}"
-                        if full_name not in sharded_names:
-                            fully_shard(child_module, mesh=device_mesh, reshard_after_forward=reshard)
-                            sharded_names.add(full_name)
-                            logger.debug(f"Applied fully_shard to {full_name} with strategy {strategy}")
+            if pattern in name_to_module:
+                target = name_to_module[pattern]
+                if isinstance(target, (torch.nn.ModuleList, torch.nn.ModuleDict, torch.nn.Sequential)):
+                    for child_name, child in target.named_children():
+                        _shard(f"{pattern}.{child_name}", child, reshard)
                 else:
-                    if module_pattern not in sharded_names:
-                        fully_shard(target, mesh=device_mesh, reshard_after_forward=reshard)
-                        sharded_names.add(module_pattern)
-                        logger.debug(f"Applied fully_shard to {module_pattern} with strategy {strategy}")
+                    _shard(pattern, target, reshard)
             else:
-                # Fallback: substring match for patterns that don't match exact module names
+                # Prefix match: "model.layers" matches "model.layers.0", etc.
                 for name, module in model.named_modules():
-                    if module_pattern not in name or name in sharded_names:
+                    if name in sharded or isinstance(module, (torch.nn.ModuleList, torch.nn.ModuleDict, torch.nn.Sequential)):
                         continue
-                    # Skip children of already-sharded modules (they belong to their parent's bucket)
-                    if any(name.startswith(s + ".") for s in sharded_names):
+                    if name != pattern and not name.startswith(pattern + "."):
                         continue
-                    if isinstance(module, (nn_module.ModuleList, nn_module.ModuleDict, nn_module.Sequential)):
+                    if any(name.startswith(s + ".") for s in sharded):
                         continue
-                    fully_shard(module, mesh=device_mesh, reshard_after_forward=reshard)
-                    sharded_names.add(name)
-                    logger.debug(f"Applied fully_shard to {name} with strategy {strategy}")
+                    _shard(name, module, reshard)
 
-        # Always apply to root
-        fully_shard(
-            model,
-            mesh=device_mesh,
-            reshard_after_forward=reshard_after_forward,
-        )
+        fully_shard(model, mesh=device_mesh, reshard_after_forward=True)
+
+        # Re-tie weights after fully_shard
+        if hasattr(model, "tie_weights"):
+            model.tie_weights()
     else:
         raise ValueError(f"fsdp_plan must be 'auto' or a dict, got {type(fsdp_plan)}")
 
-    # Mark the model as FSDP-managed
+    # Used by generation code to detect FSDP and enable synced_gpus.
     model._is_fsdp_managed_module = True
-    model._fsdp_device_mesh = device_mesh
-    model._fsdp_size = device_mesh.size()
 
     return model
 

@@ -437,7 +437,7 @@ def test_fsdp2_auto_plan_vs_ddp(nproc_per_node, tie_word_embeddings, dtype):
 
 
 def _test_fsdp2_manual_plan_vs_ddp_impl(rank, dtype, tie_word_embeddings):
-    """Compare losses, grad norms, and final weights between DDP and FSDP2 with a manual fsdp_plan dict."""
+    """Compare DDP vs FSDP2 with a per-sublayer manual plan (self_attn + mlp buckets)."""
     init_test_logger()
 
     device = torch.device(f"cuda:{rank}")
@@ -451,15 +451,16 @@ def _test_fsdp2_manual_plan_vs_ddp_impl(rank, dtype, tie_word_embeddings):
 
     dist.barrier()
 
-    # When weights are tied, lm_head shares its weight with embed_tokens —
-    # it must NOT appear in the plan (the weight is already in the embedding's bucket).
-    fsdp_plan = {
-        "model.embed_tokens": "reshard",
-        "model.layers": "reshard",
-        "model.norm": "no_reshard",
-    }
+    # Fine-grained plan: shard at self_attn and mlp level instead of whole layers.
+    fsdp_plan = {"model.embed_tokens": "free_full_weight"}
+    for i in range(config.num_hidden_layers):
+        fsdp_plan[f"model.layers.{i}.self_attn"] = "free_full_weight"
+        fsdp_plan[f"model.layers.{i}.mlp"] = "free_full_weight"
+    fsdp_plan["model.norm"] = "keep_full_weight"
     if not tie_word_embeddings:
-        fsdp_plan["lm_head"] = "no_reshard"
+        fsdp_plan["lm_head"] = "keep_full_weight"
+    
+    print(fsdp_plan)
 
     device_map, device_mesh, _ = initialize_fsdp(fsdp_plan=fsdp_plan)
     fsdp_losses, fsdp_grad_norms, fsdp_state_dict = train_fsdp2(
