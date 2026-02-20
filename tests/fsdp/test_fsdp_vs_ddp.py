@@ -50,11 +50,20 @@ if is_torch_available():
     from torch.distributed.tensor import DTensor
     from torch.nn.parallel import DistributedDataParallel as DDP
 
-    from transformers.integrations.fsdp import apply_fsdp2, initialize_fsdp
+    from transformers.integrations.fsdp import _find_final_norm, apply_fsdp2, get_transformer_block_classes, initialize_fsdp
+
+
+# TODO(3outeille): run slow model?
+MODEL_NAME = "JackFram/llama-160m"
+BATCH_SIZE = 2
+SEQ_LEN = 1024
+NUM_STEPS = 20
+LR = 3e-4
+SEED = 42
 
 
 # =============================================================================
-# Distributed helper functions (following test_fsdp2.py pattern exactly)
+# Distributed helpers
 # =============================================================================
 
 
@@ -66,7 +75,7 @@ def global_wrapper(rank, func, world_size, port, func_args, func_kwargs):
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
 
-    # NOTE(3outeille): tells cuBLAS to use a deterministic workspace of 4096 entries × 8 bytes.
+    # NOTE(3outeille): tells cuBLAS to use a deterministic workspace of 4096 entries x 8 bytes.
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.use_deterministic_algorithms(True)
 
@@ -100,43 +109,9 @@ def skip_if_insufficient_devices(nproc_per_node):
 
 
 # =============================================================================
-# Utility functions
+# Training & comparison helpers
 # =============================================================================
 
-#TODO(3outeille): run slow model?
-MODEL_NAME = "JackFram/llama-160m"
-# MODEL_NAME = "Corianas/Tiny-Moe"
-BATCH_SIZE = 2
-SEQ_LEN = 1024
-NUM_STEPS = 20
-LR = 3e-4
-SEED = 42
-
-def log_comparison_table(title, ddp_vals, fsdp_vals):
-    """Log a side-by-side comparison table for DDP vs FSDP2 values."""
-    C = Colors
-    SEP = f"{C.DIM}|{C.RESET}"
-    ROW = f"  {C.DIM}{'─' * 52}{C.RESET}"
-
-    logger.info(f"  {C.BOLD}{title}{C.RESET}")
-    logger.info(ROW)
-    logger.info(
-        f"  {C.DIM}{'step':>4}{C.RESET}  "
-        f"{SEP}  {C.BLUE}{C.BOLD}{'DDP':^14}{C.RESET}  "
-        f"{SEP}  {C.MAGENTA}{C.BOLD}{'FSDP2':^14}{C.RESET}  "
-        f"{SEP}  {C.DIM}{'diff':^10}{C.RESET}"
-    )
-    logger.info(ROW)
-    for step in range(len(ddp_vals)):
-        diff = abs(ddp_vals[step] - fsdp_vals[step])
-        match = f"{C.GREEN}={C.RESET}" if diff < 1e-6 else f"{C.YELLOW}{diff:.1e}{C.RESET}"
-        logger.info(
-            f"  {C.DIM}{step + 1:>4}{C.RESET}  "
-            f"{SEP}  {C.BLUE}{ddp_vals[step]:>14.6f}{C.RESET}  "
-            f"{SEP}  {C.MAGENTA}{fsdp_vals[step]:>14.6f}{C.RESET}  "
-            f"{SEP}  {match:^10}"
-        )
-    logger.info(ROW)
 
 def create_deterministic_data(batch_size, seq_len, vocab_size, device, seed):
     """Create deterministic random training data using torch.randint."""
@@ -145,6 +120,7 @@ def create_deterministic_data(batch_size, seq_len, vocab_size, device, seed):
     input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device, generator=generator)
     labels = input_ids.clone()
     return [(input_ids, labels)]
+
 
 def gather_fsdp2_state_dict(model):
     """Gather FSDP2 sharded parameters into full tensors via DTensor.full_tensor()."""
@@ -177,6 +153,33 @@ def compute_grad_norm(model):
     return total_norm_sq ** 0.5
 
 
+def log_comparison_table(title, ddp_vals, fsdp_vals):
+    """Log a side-by-side comparison table for DDP vs FSDP2 values."""
+    C = Colors
+    SEP = f"{C.DIM}|{C.RESET}"
+    ROW = f"  {C.DIM}{'─' * 52}{C.RESET}"
+
+    logger.info(f"  {C.BOLD}{title}{C.RESET}")
+    logger.info(ROW)
+    logger.info(
+        f"  {C.DIM}{'step':>4}{C.RESET}  "
+        f"{SEP}  {C.BLUE}{C.BOLD}{'DDP':^14}{C.RESET}  "
+        f"{SEP}  {C.MAGENTA}{C.BOLD}{'FSDP2':^14}{C.RESET}  "
+        f"{SEP}  {C.DIM}{'diff':^10}{C.RESET}"
+    )
+    logger.info(ROW)
+    for step in range(len(ddp_vals)):
+        diff = abs(ddp_vals[step] - fsdp_vals[step])
+        match = f"{C.GREEN}={C.RESET}" if diff < 1e-6 else f"{C.YELLOW}{diff:.1e}{C.RESET}"
+        logger.info(
+            f"  {C.DIM}{step + 1:>4}{C.RESET}  "
+            f"{SEP}  {C.BLUE}{ddp_vals[step]:>14.6f}{C.RESET}  "
+            f"{SEP}  {C.MAGENTA}{fsdp_vals[step]:>14.6f}{C.RESET}  "
+            f"{SEP}  {match:^10}"
+        )
+    logger.info(ROW)
+
+
 def train_ddp(rank, config, batches, lr, device, dtype):
     set_seed(SEED)
     model = AutoModelForCausalLM.from_config(config).to(device).to(dtype)
@@ -203,14 +206,14 @@ def train_ddp(rank, config, batches, lr, device, dtype):
     return losses, grad_norms, state_dict
 
 
-def train_fsdp2(rank, config, batches, lr, device_map, device_mesh, dtype):
+def train_fsdp2(rank, config, batches, lr, device_map, device_mesh, dtype, fsdp_plan):
     """Run an FSDP2 training loop with Adam.
 
     Returns (losses, grad_norms, state_dict).
     """
     set_seed(SEED)
     model = AutoModelForCausalLM.from_config(config).to(device_map).to(dtype)
-    model = apply_fsdp2(model, device_mesh, fsdp_plan="auto")
+    model = apply_fsdp2(model, device_mesh, fsdp_plan=fsdp_plan)
     model.train()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -232,7 +235,194 @@ def train_fsdp2(rank, config, batches, lr, device_map, device_mesh, dtype):
     state_dict = gather_fsdp2_state_dict(model)
     return losses, grad_norms, state_dict
 
-def _test_fsdp2_vs_ddp_impl(rank, dtype):
+
+def assert_ddp_fsdp_match(ddp_losses, ddp_grad_norms, ddp_state_dict, fsdp_losses, fsdp_grad_norms, fsdp_state_dict, label="FSDP2"):
+    """Assert that DDP and FSDP2 training produced identical results."""
+    for step in range(len(ddp_losses)):
+        torch.testing.assert_close(
+            torch.tensor(ddp_losses[step]),
+            torch.tensor(fsdp_losses[step]),
+            rtol=1e-5,
+            atol=1e-5,
+            msg=f"Step {step} loss mismatch: DDP={ddp_losses[step]}, {label}={fsdp_losses[step]}",
+        )
+
+    for step in range(len(ddp_grad_norms)):
+        torch.testing.assert_close(
+            torch.tensor(ddp_grad_norms[step]),
+            torch.tensor(fsdp_grad_norms[step]),
+            rtol=1e-5,
+            atol=1e-5,
+            msg=f"Step {step} grad norm mismatch: DDP={ddp_grad_norms[step]}, {label}={fsdp_grad_norms[step]}",
+        )
+
+    for key in ddp_state_dict:
+        assert key in fsdp_state_dict, f"Key {key} missing from {label} state dict"
+        torch.testing.assert_close(
+            ddp_state_dict[key],
+            fsdp_state_dict[key],
+            rtol=1e-5,
+            atol=1e-5,
+            msg=f"Weight mismatch for {key}",
+        )
+
+
+# =============================================================================
+# Test: FSDP2 sharding structure (TorchTitan parity)
+# =============================================================================
+
+
+def _test_fsdp2_sharding_structure_impl(rank):
+    """
+    Verify that apply_fsdp2(fsdp_plan="auto") produces the same FSDP sharding
+    structure as TorchTitan's apply_fsdp.
+
+    TorchTitan (torchtitan/models/llama3/infra/parallelize.py) shards:
+      1. model.tok_embeddings          — own FSDP bucket
+      2. model.layers[i]               — each TransformerBlock is its own bucket
+      3. [model.norm, model.output]     — grouped bucket (reshard_after_forward=False)
+      4. model (root)                   — root bucket
+
+    Transformers' apply_fsdp2(fsdp_plan="auto") now mirrors this:
+      1. Input embeddings               — own bucket
+      2. Each decoder layer             — own bucket
+      3. [final norm, output head]      — grouped bucket (reshard_after_forward=False)
+      4. Root model                     — root bucket
+
+    We detect directly-sharded modules via the FSDP2 dynamic class swap: when
+    fully_shard(module) is called, module.__class__ is swapped to an
+    FSDP-prefixed class (e.g. LlamaDecoderLayer -> FSDPLlamaDecoderLayer).
+    Child modules that were NOT directly passed to fully_shard keep their
+    original class.
+    """
+    init_test_logger()
+
+    config = AutoConfig.from_pretrained(MODEL_NAME)
+
+    device_map, device_mesh, _ = initialize_fsdp(fsdp_plan="auto")
+
+    set_seed(SEED)
+    model = AutoModelForCausalLM.from_config(config).to(device_map)
+
+    # --- Before FSDP: record the expected targets ---
+    block_classes = get_transformer_block_classes(model)
+    assert block_classes, "get_transformer_block_classes found no block classes"
+
+    decoder_layer_names = set()
+    for name, module in model.named_modules():
+        if type(module) in block_classes:
+            decoder_layer_names.add(name)
+
+    assert len(decoder_layer_names) == config.num_hidden_layers, (
+        f"Expected {config.num_hidden_layers} decoder layers, "
+        f"detected {len(decoder_layer_names)}: {sorted(decoder_layer_names)}"
+    )
+
+    input_embed = model.get_input_embeddings()
+    output_embed = model.get_output_embeddings()
+    final_norm = _find_final_norm(model, decoder_layer_names)
+
+    weights_tied = (
+        input_embed is not None
+        and output_embed is not None
+        and hasattr(input_embed, "weight")
+        and hasattr(output_embed, "weight")
+        and input_embed.weight is output_embed.weight
+    )
+
+    # Build name -> module mapping for identity checks after FSDP
+    module_ids_before = {}
+    for name, module in model.named_modules():
+        module_ids_before[id(module)] = name
+
+    embed_name = module_ids_before.get(id(input_embed))
+    output_name = module_ids_before.get(id(output_embed))
+    norm_name = module_ids_before.get(id(final_norm))
+
+    # --- Apply FSDP2 ---
+    model = apply_fsdp2(model, device_mesh, fsdp_plan="auto")
+
+    # --- After FSDP: collect modules that got the FSDP dynamic class swap ---
+    fsdp_targets = {}
+    for name, module in model.named_modules():
+        cls_name = type(module).__name__
+        if cls_name.startswith("FSDP"):
+            fsdp_targets[name] = cls_name
+
+    if rank == 0:
+        logger.info(f"  Block classes detected: {[c.__name__ for c in block_classes]}")
+        logger.info(f"  Weights tied: {weights_tied}")
+        logger.info(f"  FSDP targets: {fsdp_targets}")
+
+    # CHECK 1: Every decoder layer must be a direct fully_shard target
+    for layer_name in decoder_layer_names:
+        assert layer_name in fsdp_targets, (
+            f"Decoder layer '{layer_name}' was not wrapped with fully_shard. "
+            f"FSDP targets: {sorted(fsdp_targets.keys())}"
+        )
+
+    # CHECK 2: Root model must be a direct fully_shard target
+    assert "" in fsdp_targets, (
+        f"Root model was not wrapped with fully_shard. "
+        f"FSDP targets: {sorted(fsdp_targets.keys())}"
+    )
+
+    # CHECK 3: Input embeddings must be a direct fully_shard target
+    assert embed_name is not None and embed_name in fsdp_targets, (
+        f"Input embeddings '{embed_name}' was not wrapped with fully_shard. "
+        f"FSDP targets: {sorted(fsdp_targets.keys())}"
+    )
+
+    # CHECK 4: Final norm must be a direct fully_shard target
+    assert norm_name is not None and norm_name in fsdp_targets, (
+        f"Final norm '{norm_name}' was not wrapped with fully_shard. "
+        f"FSDP targets: {sorted(fsdp_targets.keys())}"
+    )
+
+    # CHECK 5: Output head must be sharded if weights are NOT tied
+    if not weights_tied:
+        assert output_name is not None and output_name in fsdp_targets, (
+            f"Output head '{output_name}' was not wrapped with fully_shard "
+            f"(weights are not tied). FSDP targets: {sorted(fsdp_targets.keys())}"
+        )
+
+    # CHECK 6: No sub-block modules should be separate FSDP targets.
+    # Modules nested inside a decoder layer (e.g. self_attn, mlp, individual
+    # Linear layers) must NOT have their own class swap — they belong to
+    # the decoder layer's communication bucket, not their own.
+    sub_block_targets = [
+        name for name in fsdp_targets
+        if name != "" and name not in decoder_layer_names
+        and any(name.startswith(layer + ".") for layer in decoder_layer_names)
+    ]
+    assert not sub_block_targets, (
+        f"Sub-block modules were sharded as separate FSDP units "
+        f"(should be part of their decoder layer's bucket): {sub_block_targets}"
+    )
+
+    if rank == 0:
+        logger.info(
+            f"  FSDP sharding structure OK: embeddings + "
+            f"{len(decoder_layer_names)} decoder layers + "
+            f"norm/output + root ({len(fsdp_targets)} total FSDP targets)"
+        )
+
+
+@pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
+@require_fsdp
+@require_torch_multi_accelerator
+def test_fsdp2_sharding_structure(nproc_per_node):
+    """Verify per-decoder-layer FSDP sharding matches TorchTitan's granularity."""
+    skip_if_insufficient_devices(nproc_per_node)
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_sharding_structure_impl)()
+
+
+# =============================================================================
+# Test: FSDP2 auto plan vs DDP
+# =============================================================================
+
+
+def _test_fsdp2_auto_plan_vs_ddp_impl(rank, dtype):
     """Compare losses, grad norms, and final weights between DDP and FSDP2."""
     init_test_logger()
 
@@ -248,7 +438,7 @@ def _test_fsdp2_vs_ddp_impl(rank, dtype):
 
     device_map, device_mesh, _ = initialize_fsdp(fsdp_plan="auto")
     fsdp_losses, fsdp_grad_norms, fsdp_state_dict = train_fsdp2(
-        rank, config, batches, LR, device_map, device_mesh, dtype
+        rank, config, batches, LR, device_map, device_mesh, dtype, fsdp_plan="auto",
     )
 
     dist.barrier()
@@ -260,36 +450,8 @@ def _test_fsdp2_vs_ddp_impl(rank, dtype):
         log_comparison_table("Gradient norm per step", ddp_grad_norms, fsdp_grad_norms)
         logger.info("")
 
-    # Compare per-step losses
-    for step in range(NUM_STEPS):
-        torch.testing.assert_close(
-            torch.tensor(ddp_losses[step]),
-            torch.tensor(fsdp_losses[step]),
-            rtol=1e-5,
-            atol=1e-5,
-            msg=f"Step {step} loss mismatch: DDP={ddp_losses[step]}, FSDP2={fsdp_losses[step]}",
-        )
+    assert_ddp_fsdp_match(ddp_losses, ddp_grad_norms, ddp_state_dict, fsdp_losses, fsdp_grad_norms, fsdp_state_dict)
 
-    # Compare per-step gradient norms
-    for step in range(NUM_STEPS):
-        torch.testing.assert_close(
-            torch.tensor(ddp_grad_norms[step]),
-            torch.tensor(fsdp_grad_norms[step]),
-            rtol=1e-5,
-            atol=1e-5,
-            msg=f"Step {step} grad norm mismatch: DDP={ddp_grad_norms[step]}, FSDP2={fsdp_grad_norms[step]}",
-        )
-
-    # Compare final weights
-    for key in ddp_state_dict:
-        assert key in fsdp_state_dict, f"Key {key} missing from FSDP2 state dict"
-        torch.testing.assert_close(
-            ddp_state_dict[key],
-            fsdp_state_dict[key],
-            rtol=1e-4,
-            atol=1e-4,
-            msg=f"Weight mismatch for {key}",
-        )
 
 @pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
 @pytest.mark.parametrize(
@@ -298,15 +460,76 @@ def _test_fsdp2_vs_ddp_impl(rank, dtype):
 )
 @require_fsdp
 @require_torch_multi_accelerator
-def test_fsdp2_vs_ddp(nproc_per_node, dtype):
+def test_fsdp2_auto_plan_vs_ddp(nproc_per_node, dtype):
     """20-step Adam: compare per-step losses, grad norms, and final weights."""
     skip_if_insufficient_devices(nproc_per_node)
-    init_distributed(world_size=nproc_per_node)(_test_fsdp2_vs_ddp_impl)(dtype)
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_auto_plan_vs_ddp_impl)(dtype)
 
 
 # =============================================================================
-# FSDP2 save/load checkpoint test
+# Test: FSDP2 manual plan vs DDP
 # =============================================================================
+
+
+def _test_fsdp2_manual_plan_vs_ddp_impl(rank, dtype):
+    """Compare losses, grad norms, and final weights between DDP and FSDP2 with a manual fsdp_plan dict."""
+    init_test_logger()
+
+    device = torch.device(f"cuda:{rank}")
+    config = AutoConfig.from_pretrained(MODEL_NAME)
+
+    batches = create_deterministic_data(BATCH_SIZE, SEQ_LEN, config.vocab_size, device, seed=SEED)
+    batches = batches * NUM_STEPS
+
+    ddp_losses, ddp_grad_norms, ddp_state_dict = train_ddp(rank, config, batches, LR, device, dtype)
+
+    dist.barrier()
+
+    fsdp_plan = {
+        "model.embed_tokens": "reshard",
+        "model.layers": "reshard",
+        "model.norm": "no_reshard",
+        "lm_head": "no_reshard",
+    }
+
+    device_map, device_mesh, _ = initialize_fsdp(fsdp_plan=fsdp_plan)
+    fsdp_losses, fsdp_grad_norms, fsdp_state_dict = train_fsdp2(
+        rank, config, batches, LR, device_map, device_mesh, dtype, fsdp_plan=fsdp_plan,
+    )
+
+    dist.barrier()
+
+    if rank == 0:
+        logger.info("")
+        log_comparison_table("Loss per step (manual plan)", ddp_losses, fsdp_losses)
+        logger.info("")
+        log_comparison_table("Gradient norm per step (manual plan)", ddp_grad_norms, fsdp_grad_norms)
+        logger.info("")
+
+    assert_ddp_fsdp_match(
+        ddp_losses, ddp_grad_norms, ddp_state_dict,
+        fsdp_losses, fsdp_grad_norms, fsdp_state_dict,
+        label="FSDP2(manual)",
+    )
+
+
+@pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
+@pytest.mark.parametrize(
+    "dtype",
+    [pytest.param(torch.float32, id="float32"), pytest.param(torch.bfloat16, id="bfloat16")],
+)
+@require_fsdp
+@require_torch_multi_accelerator
+def test_fsdp2_manual_plan_vs_ddp(nproc_per_node, dtype):
+    """20-step Adam with manual fsdp_plan dict: compare per-step losses, grad norms, and final weights."""
+    skip_if_insufficient_devices(nproc_per_node)
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_manual_plan_vs_ddp_impl)(dtype)
+
+
+# =============================================================================
+# Test: FSDP2 save/load checkpoint
+# =============================================================================
+
 
 def _test_fsdp2_save_load_impl(rank):
     """Train FSDP2 model, save via DCP, load into fresh model, compare state dicts."""
