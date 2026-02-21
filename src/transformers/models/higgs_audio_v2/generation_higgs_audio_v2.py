@@ -276,7 +276,9 @@ class HiggsAudioV2GenerationMixin(GenerationMixin):
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             if prefill_consumed:
-                model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+                use_cache = model_kwargs.get("use_cache", True)
+                new_input_ids = input_ids[:, -1:] if use_cache else input_ids
+                model_inputs = self.prepare_inputs_for_generation(new_input_ids, **model_kwargs)
                 with self._optimize_model_for_decode():
                     outputs = model_forward(**model_inputs, return_dict=True)
             prefill_consumed = True
