@@ -25,7 +25,7 @@ class FalconH1Config(PreTrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`FalconH1Model`]. It is used to instantiate a
     FalconH1Model model according to the specified arguments, defining the model architecture. Instantiating a configuration
-    with defaults taken from [ibm-fms/FalconH1-9.8b-2.2T-hf](https://huggingface.co/ibm-fms/FalconH1-9.8b-2.2T-hf).
+    with defaults taken from [tiiuae/Falcon-H1-1.5B-Deep-Instruct](https://huggingface.co/tiiuae/Falcon-H1-1.5B-Deep-Instruct).
     The FalconH1Model is a hybrid [mamba2](https://github.com/state-spaces/mamba) architecture with SwiGLU.
     The checkpoints are  jointly trained by IBM, Princeton, and UIUC.
     Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
