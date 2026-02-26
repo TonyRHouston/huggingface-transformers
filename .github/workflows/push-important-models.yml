@@ -1,154 +1,84 @@
 name: Slow tests on important models (on Push - A10)
-
 on:
-  push:
-    branches: [ main ]
-
+  workflow_dispatch: {}
 jobs:
   get_modified_models:
-    name: "Get all modified files"
+    name: Get all modified files
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Get changed files using `actions/github-script`
-        id: get-changed-files
-        uses: actions/github-script@v7
-        with:
-          script: |
-            let files = [];
-            
-            // Only handle push events
-            if (context.eventName === 'push') {
-              const afterSha = context.payload.after;
-              const branchName = context.payload.ref.replace('refs/heads/', '');
-              
-              let baseSha;
-              
-              if (branchName === 'main') {
-                console.log('Push to main branch, comparing to parent commit');
-                // Get the parent commit of the pushed commit
-                const { data: commit } = await github.rest.repos.getCommit({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: afterSha
-                });
-                baseSha = commit.parents[0]?.sha;
-                if (!baseSha) {
-                  throw new Error('No parent commit found for the pushed commit');
-                }
-              } else {
-                console.log(`Push to branch ${branchName}, comparing to main`);
-                baseSha = 'main';
-              }
-              
-              const { data: comparison } = await github.rest.repos.compareCommits({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                base: baseSha,
-                head: afterSha
-              });
-              
-              // Include added, modified, and renamed files
-              files = comparison.files
-                .filter(file => file.status === 'added' || file.status === 'modified' || file.status === 'renamed')
-                .map(file => file.filename);
-            }
-            
-            // Include all files under src/transformers/ (not just models subdirectory)
-            const filteredFiles = files.filter(file => 
-              file.startsWith('src/transformers/')
-            );
-            
-            core.setOutput('changed_files', filteredFiles.join(' '));
-            core.setOutput('any_changed', filteredFiles.length > 0 ? 'true' : 'false');
-
-      - name: Parse changed files with Python
-        if: steps.get-changed-files.outputs.any_changed == 'true'
-        env:
-          CHANGED_FILES: ${{ steps.get-changed-files.outputs.changed_files }}
-        id: set-matrix
-        run: |
-          python3 - << 'EOF'
-          import os
-          import sys
-          import json
-          
-          # Add the utils directory to Python path
-          sys.path.insert(0, 'utils')
-          
-          # Import the important models list
-          from important_files import IMPORTANT_MODELS
-          
-          print(f"Important models: {IMPORTANT_MODELS}")
-          
-          # Get the changed files from the previous step
-          changed_files_str = os.environ.get('CHANGED_FILES', '')
-          changed_files = changed_files_str.split() if changed_files_str else []
-          
-          # Filter to only Python files
-          python_files = [f for f in changed_files if f.endswith('.py')]
-          print(f"Python files changed: {python_files}")
-          
-          result_models = set()
-          
-          # Specific files that trigger all models
-          transformers_utils_files = [
-              'modeling_utils.py',
-              'modeling_rope_utils.py', 
-              'modeling_flash_attention_utils.py',
-              'modeling_attn_mask_utils.py',
-              'cache_utils.py',
-              'masking_utils.py',
-              'pytorch_utils.py'
-          ]
-          
-          # Single loop through all Python files
-          for file in python_files:
-              # Check for files under src/transformers/models/
-              if file.startswith('src/transformers/models/'):
-                  remaining_path = file[len('src/transformers/models/'):]
-                  if '/' in remaining_path:
-                      model_dir = remaining_path.split('/')[0]
-                      if model_dir in IMPORTANT_MODELS:
-                          result_models.add(model_dir)
-                          print(f"Added model directory: {model_dir}")
-              
-              # Check for specific files under src/transformers/ or src/transformers/generation/ files
-              elif file.startswith('src/transformers/generation/') or \
-                   (file.startswith('src/transformers/') and os.path.basename(file) in transformers_utils_files):
-                  print(f"Found core file: {file} - including all important models")
-                  result_models.update(IMPORTANT_MODELS)
-                  break  # No need to continue once we include all models
-          
-          # Convert to sorted list and create matrix
-          result_list = sorted(list(result_models))
-          print(f"Final model list: {result_list}")
-          
-          if result_list:
-              matrix_json = json.dumps(result_list)
-              print(f"matrix={matrix_json}")
-              
-              # Write to GITHUB_OUTPUT
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                  f.write(f"matrix={matrix_json}\n")
-          else:
-              print("matrix=[]")
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                  f.write("matrix=[]\n")
-          EOF
-
+    - name: Check out code
+      uses: actions/checkout@v4
+    - name: Get changed files using `actions/github-script`
+      id: get-changed-files
+      uses: actions/github-script@v7
+      with:
+        script: "let files = [];\n\n// Only handle push events\nif (context.eventName\
+          \ === 'push') {\n  const afterSha = context.payload.after;\n  const branchName\
+          \ = context.payload.ref.replace('refs/heads/', '');\n  \n  let baseSha;\n\
+          \  \n  if (branchName === 'main') {\n    console.log('Push to main branch,\
+          \ comparing to parent commit');\n    // Get the parent commit of the pushed\
+          \ commit\n    const { data: commit } = await github.rest.repos.getCommit({\n\
+          \      owner: context.repo.owner,\n      repo: context.repo.repo,\n    \
+          \  ref: afterSha\n    });\n    baseSha = commit.parents[0]?.sha;\n    if\
+          \ (!baseSha) {\n      throw new Error('No parent commit found for the pushed\
+          \ commit');\n    }\n  } else {\n    console.log(`Push to branch ${branchName},\
+          \ comparing to main`);\n    baseSha = 'main';\n  }\n  \n  const { data:\
+          \ comparison } = await github.rest.repos.compareCommits({\n    owner: context.repo.owner,\n\
+          \    repo: context.repo.repo,\n    base: baseSha,\n    head: afterSha\n\
+          \  });\n  \n  // Include added, modified, and renamed files\n  files = comparison.files\n\
+          \    .filter(file => file.status === 'added' || file.status === 'modified'\
+          \ || file.status === 'renamed')\n    .map(file => file.filename);\n}\n\n\
+          // Include all files under src/transformers/ (not just models subdirectory)\n\
+          const filteredFiles = files.filter(file => \n  file.startsWith('src/transformers/')\n\
+          );\n\ncore.setOutput('changed_files', filteredFiles.join(' '));\ncore.setOutput('any_changed',\
+          \ filteredFiles.length > 0 ? 'true' : 'false');\n"
+    - name: Parse changed files with Python
+      if: steps.get-changed-files.outputs.any_changed == 'true'
+      env:
+        CHANGED_FILES: ${{ steps.get-changed-files.outputs.changed_files }}
+      id: set-matrix
+      run: "python3 - << 'EOF'\nimport os\nimport sys\nimport json\n\n# Add the utils\
+        \ directory to Python path\nsys.path.insert(0, 'utils')\n\n# Import the important\
+        \ models list\nfrom important_files import IMPORTANT_MODELS\n\nprint(f\"Important\
+        \ models: {IMPORTANT_MODELS}\")\n\n# Get the changed files from the previous\
+        \ step\nchanged_files_str = os.environ.get('CHANGED_FILES', '')\nchanged_files\
+        \ = changed_files_str.split() if changed_files_str else []\n\n# Filter to\
+        \ only Python files\npython_files = [f for f in changed_files if f.endswith('.py')]\n\
+        print(f\"Python files changed: {python_files}\")\n\nresult_models = set()\n\
+        \n# Specific files that trigger all models\ntransformers_utils_files = [\n\
+        \    'modeling_utils.py',\n    'modeling_rope_utils.py', \n    'modeling_flash_attention_utils.py',\n\
+        \    'modeling_attn_mask_utils.py',\n    'cache_utils.py',\n    'masking_utils.py',\n\
+        \    'pytorch_utils.py'\n]\n\n# Single loop through all Python files\nfor\
+        \ file in python_files:\n    # Check for files under src/transformers/models/\n\
+        \    if file.startswith('src/transformers/models/'):\n        remaining_path\
+        \ = file[len('src/transformers/models/'):]\n        if '/' in remaining_path:\n\
+        \            model_dir = remaining_path.split('/')[0]\n            if model_dir\
+        \ in IMPORTANT_MODELS:\n                result_models.add(model_dir)\n   \
+        \             print(f\"Added model directory: {model_dir}\")\n    \n    #\
+        \ Check for specific files under src/transformers/ or src/transformers/generation/\
+        \ files\n    elif file.startswith('src/transformers/generation/') or \\\n\
+        \         (file.startswith('src/transformers/') and os.path.basename(file)\
+        \ in transformers_utils_files):\n        print(f\"Found core file: {file}\
+        \ - including all important models\")\n        result_models.update(IMPORTANT_MODELS)\n\
+        \        break  # No need to continue once we include all models\n\n# Convert\
+        \ to sorted list and create matrix\nresult_list = sorted(list(result_models))\n\
+        print(f\"Final model list: {result_list}\")\n\nif result_list:\n    matrix_json\
+        \ = json.dumps(result_list)\n    print(f\"matrix={matrix_json}\")\n    \n\
+        \    # Write to GITHUB_OUTPUT\n    with open(os.environ['GITHUB_OUTPUT'],\
+        \ 'a') as f:\n        f.write(f\"matrix={matrix_json}\\n\")\nelse:\n    print(\"\
+        matrix=[]\")\n    with open(os.environ['GITHUB_OUTPUT'], 'a') as f:\n    \
+        \    f.write(\"matrix=[]\\n\")\nEOF\n"
   model-ci:
     name: Model CI
     uses: ./.github/workflows/self-scheduled.yml
     needs: get_modified_models
-    if: needs.get_modified_models.outputs.matrix != '' && needs.get_modified_models.outputs.matrix != '[]'
+    if: needs.get_modified_models.outputs.matrix != '' && needs.get_modified_models.outputs.matrix
+      != '[]'
     with:
       job: run_models_gpu
-      slack_report_channel: "#transformers-ci-push"
+      slack_report_channel: '#transformers-ci-push'
       docker: huggingface/transformers-all-latest-gpu:flash-attn
       ci_event: push
       report_repo_id: hf-internal-testing/transformers_ci_push
