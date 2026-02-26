@@ -1,90 +1,65 @@
-# This workflow allows trusted contributors to trigger TRL CI runs against
-# specific Transformers commits by commenting `/trl-ci` on a PR in the TRL repo.
-# It is meant to be used during the ongoing Trainer refactor/unbloat in Transformers,
-# to help evaluate the downstream impact on TRL.
 name: TRL CI bot
-
 on:
-  issue_comment:
-    types: [created]
-
+  workflow_dispatch: {}
 permissions:
   contents: read
   pull-requests: read
   issues: read
-
 jobs:
   dispatch:
-    if: >
-      github.event.issue.pull_request &&
-      contains(github.event.comment.body, '/trl-ci')
+    if: 'github.event.issue.pull_request && contains(github.event.comment.body, ''/trl-ci'')
+
+      '
     runs-on: ubuntu-latest
-
     steps:
-      - name: Gate on trusted commenter
-        id: trust
-        run: |
-          assoc="${{ github.event.comment.author_association }}"
-          case "$assoc" in
-            MEMBER|OWNER|COLLABORATOR) echo "trusted=true" >> $GITHUB_OUTPUT ;;
-            *) echo "trusted=false" >> $GITHUB_OUTPUT ;;
-          esac
+    - name: Gate on trusted commenter
+      id: trust
+      run: "assoc=\"${{ github.event.comment.author_association }}\"\ncase \"$assoc\"\
+        \ in\n  MEMBER|OWNER|COLLABORATOR) echo \"trusted=true\" >> $GITHUB_OUTPUT\
+        \ ;;\n  *) echo \"trusted=false\" >> $GITHUB_OUTPUT ;;\nesac\n"
+    - name: Ignore untrusted commenter
+      if: steps.trust.outputs.trusted != 'true'
+      run: 'echo "Untrusted commenter; ignoring."
 
-      - name: Ignore untrusted commenter
-        if: steps.trust.outputs.trusted != 'true'
-        run: |
-          echo "Untrusted commenter; ignoring."
-          exit 0
+        exit 0
 
-      - name: Fetch PR head SHA + number
-        id: pr
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR_URL="${{ github.event.issue.pull_request.url }}"
-          sha=$(gh api "$PR_URL" --jq .head.sha)
-          number=$(gh api "$PR_URL" --jq .number)
-          echo "sha=$sha" >> $GITHUB_OUTPUT
-          echo "number=$number" >> $GITHUB_OUTPUT
+        '
+    - name: Fetch PR head SHA + number
+      id: pr
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: 'PR_URL="${{ github.event.issue.pull_request.url }}"
 
-      - name: Dispatch TRL workflow
-        id: dispatch
-        env:
-          GH_TOKEN: ${{ secrets.TRL_CI_DISPATCH_TOKEN }}
-        run: |
-          gh workflow run "Tests against Transformers branch" \
-            -R huggingface/trl \
-            -f transformers_ref=${{ steps.pr.outputs.sha }}
+        sha=$(gh api "$PR_URL" --jq .head.sha)
 
-      - name: Find TRL workflow run URL
-        id: find_run
-        env:
-          GH_TOKEN: ${{ secrets.TRL_CI_DISPATCH_TOKEN }}
-        run: |
-          echo "Waiting for workflow to appear..."
-          for i in {1..10}; do
-            run_url=$(gh api \
-              repos/huggingface/trl/actions/workflows \
-              --jq '.workflows[] | select(.name=="Tests against Transformers branch") | .id')
+        number=$(gh api "$PR_URL" --jq .number)
 
-            if [ -n "$run_url" ]; then
-              run=$(gh api \
-                repos/huggingface/trl/actions/workflows/$run_url/runs \
-                -f event=workflow_dispatch \
-                -f per_page=5 \
-                --jq '.workflow_runs[0].html_url')
-              if [ -n "$run" ]; then
-                echo "url=$run" >> $GITHUB_OUTPUT
-                break
-              fi
-            fi
-            sleep 5
-          done
+        echo "sha=$sha" >> $GITHUB_OUTPUT
 
-      - name: Comment back on PR with link
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api -X POST \
-            /repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments \
-            -f body="🚀 **TRL CI triggered** against transformers commit \`${{ steps.pr.outputs.sha }}\`\n\n🔗 **Run:** ${{ steps.find_run.outputs.url }}"
+        echo "number=$number" >> $GITHUB_OUTPUT
+
+        '
+    - name: Dispatch TRL workflow
+      id: dispatch
+      env:
+        GH_TOKEN: ${{ secrets.TRL_CI_DISPATCH_TOKEN }}
+      run: "gh workflow run \"Tests against Transformers branch\" \\\n  -R huggingface/trl\
+        \ \\\n  -f transformers_ref=${{ steps.pr.outputs.sha }}\n"
+    - name: Find TRL workflow run URL
+      id: find_run
+      env:
+        GH_TOKEN: ${{ secrets.TRL_CI_DISPATCH_TOKEN }}
+      run: "echo \"Waiting for workflow to appear...\"\nfor i in {1..10}; do\n  run_url=$(gh\
+        \ api \\\n    repos/huggingface/trl/actions/workflows \\\n    --jq '.workflows[]\
+        \ | select(.name==\"Tests against Transformers branch\") | .id')\n\n  if [\
+        \ -n \"$run_url\" ]; then\n    run=$(gh api \\\n      repos/huggingface/trl/actions/workflows/$run_url/runs\
+        \ \\\n      -f event=workflow_dispatch \\\n      -f per_page=5 \\\n      --jq\
+        \ '.workflow_runs[0].html_url')\n    if [ -n \"$run\" ]; then\n      echo\
+        \ \"url=$run\" >> $GITHUB_OUTPUT\n      break\n    fi\n  fi\n  sleep 5\ndone\n"
+    - name: Comment back on PR with link
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "gh api -X POST \\\n  /repos/${{ github.repository }}/issues/${{ github.event.issue.number\
+        \ }}/comments \\\n  -f body=\"\U0001F680 **TRL CI triggered** against transformers\
+        \ commit \\`${{ steps.pr.outputs.sha }}\\`\\n\\n\U0001F517 **Run:** ${{ steps.find_run.outputs.url\
+        \ }}\"\n"
