@@ -1,13 +1,6 @@
----
 name: CodeQL Security Analysis
-
 on:
-  push:
-    branches: ["main", "fix_security_issue_*"]
-  # pull_request:
-  #   branches: ["main"]
-  workflow_dispatch:
-
+  workflow_dispatch: {}
 jobs:
   codeql:
     name: CodeQL Analysis
@@ -19,5 +12,5 @@ jobs:
       contents: read
     with:
       languages: '["actions"]'
-      queries: 'security-extended,security-and-quality'
-      runner: 'ubuntu-latest'
+      queries: security-extended,security-and-quality
+      runner: ubuntu-latest
