@@ -1,5 +1,4 @@
 name: model jobs
-
 on:
   workflow_call:
     inputs:
@@ -12,7 +11,6 @@ on:
       slice_id:
         required: true
         type: number
-
 jobs:
   model_job:
     name: Model tests
@@ -20,12 +18,16 @@ jobs:
       fail-fast: false
       matrix:
         folders: ${{ fromJson(inputs.folder_slices)[0] }}
-    runs-on: [self-hosted, yih-dar-shieh-temp-runner-for-testing-workflow-file]
+    runs-on: ubuntu-latest
     steps:
-      - name: Echo input and matrix info
-        shell: bash
-        run: |
-          echo "${{ inputs.folder_slices }}"
-          echo "${{ inputs.slice_id }}"
-          echo "${{ matrix.folders }}"
-          echo "${{ toJson(fromJson(inputs.folder_slices)[0]) }}"
+    - name: Echo input and matrix info
+      shell: bash
+      run: 'echo "${{ inputs.folder_slices }}"
+
+        echo "${{ inputs.slice_id }}"
+
+        echo "${{ matrix.folders }}"
+
+        echo "${{ toJson(fromJson(inputs.folder_slices)[0]) }}"
+
+        '
