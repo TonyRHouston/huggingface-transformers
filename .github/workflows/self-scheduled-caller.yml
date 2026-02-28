@@ -1,53 +1,47 @@
 name: Self-hosted runner (scheduled)
-
-
 on:
-  repository_dispatch:
+  repository_dispatch: null
   schedule:
-    - cron: "17 2 * * *"
+  - cron: 17 2 * * *
   workflow_dispatch:
     inputs:
       prev_workflow_run_id:
-        description: 'previous workflow run id to compare'
+        description: previous workflow run id to compare
         type: string
         required: false
-        default: ""
+        default: ''
       other_workflow_run_id:
-        description: 'other workflow run id to compare'
+        description: other workflow run id to compare
         type: string
         required: false
-        default: ""
+        default: ''
   push:
     branches:
-      - all_jobs_can_compare_against_prev_runs_clean_trigger
-
-# Used for `push` to easily modiffy the target workflow runs to compare against
+    - all_jobs_can_compare_against_prev_runs_clean_trigger
 env:
-    prev_workflow_run_id: "15152379111"
-    other_workflow_run_id: "15152379111"
-
-
+  prev_workflow_run_id: '15152379111'
+  other_workflow_run_id: '15152379111'
 jobs:
   model-ci:
     name: PyTorch pipelines
     strategy:
       fail-fast: false
       matrix:
-        machine_type: [aws-g4dn-4xlarge-cache]
-    runs-on:
-      group: '${{ matrix.machine_type }}'
+        machine_type:
+        - aws-g4dn-4xlarge-cache
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-pytorch-gpu
       options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: git fetch && git checkout ${{ github.sha }}
-
-      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
-        working-directory: /transformers
-        run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
-
-      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
-        working-directory: /transformers
-        run: python3 utils/notification_service.py
+    - name: Update clone
+      working-directory: /transformers
+      run: git fetch && git checkout ${{ github.sha }}
+    - name: Reinstall transformers in edit mode (remove the one installed during docker
+        image build)
+      working-directory: /transformers
+      run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
+    - name: Reinstall transformers in edit mode (remove the one installed during docker
+        image build)
+      working-directory: /transformers
+      run: python3 utils/notification_service.py
