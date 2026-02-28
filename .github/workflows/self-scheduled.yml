@@ -1,102 +1,95 @@
 name: Self-hosted runner (scheduled)
-
-# Note that each job's dependencies go into a corresponding docker file.
-#
-# For example for `run_all_tests_torch_cuda_extensions_gpu` the docker image is
-# `huggingface/transformers-pytorch-deepspeed-latest-gpu`, which can be found at
-# `docker/transformers-pytorch-deepspeed-latest-gpu/Dockerfile`
-
 on:
   push:
     branches:
-      - check_example_ci
-
+    - check_example_ci
 env:
   HF_HOME: /transformers/mycache
-#  HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
-  #OMP_NUM_THREADS: 8
-  #MKL_NUM_THREADS: 8
   RUN_SLOW: yes
-  #SIGOPT_API_TOKEN: ${{ secrets.SIGOPT_API_TOKEN }}
-  #TF_FORCE_GPU_ALLOW_GROWTH: true
-  #RUN_PT_TF_CROSS_TESTS: 1
-
 jobs:
   setup:
     name: Setup
     strategy:
       matrix:
-        machine_type: [single-gpu]
-    runs-on: ${{ format('{0}-{1}', matrix.machine_type, 'docker') }}
+        machine_type:
+        - single-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: |
-          git fetch && git checkout ${{ github.sha }}
+    - name: Update clone
+      working-directory: /transformers
+      run: 'git fetch && git checkout ${{ github.sha }}
 
-      - name: Cleanup
-        working-directory: /transformers
-        run: |
-          rm -rf tests/__pycache__
-          rm -rf tests/models/__pycache__
-          rm -rf reports
+        '
+    - name: Cleanup
+      working-directory: /transformers
+      run: 'rm -rf tests/__pycache__
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        rm -rf tests/models/__pycache__
 
-      - id: set-matrix
-        name: Identify models to test
-        working-directory: /transformers/tests
-        run: |
-          echo "matrix=$(python3 -c 'import os; tests = os.getcwd(); model_tests = os.listdir(os.path.join(tests, "models")); d1 = sorted(list(filter(os.path.isdir, os.listdir(tests)))); d2 = sorted(list(filter(os.path.isdir, [f"models/{x}" for x in model_tests]))); d1.remove("models"); d = d2 + d1; print(d)')" >> $GITHUB_OUTPUT
+        rm -rf reports
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - id: set-matrix
+      name: Identify models to test
+      working-directory: /transformers/tests
+      run: 'echo "matrix=$(python3 -c ''import os; tests = os.getcwd(); model_tests
+        = os.listdir(os.path.join(tests, "models")); d1 = sorted(list(filter(os.path.isdir,
+        os.listdir(tests)))); d2 = sorted(list(filter(os.path.isdir, [f"models/{x}"
+        for x in model_tests]))); d1.remove("models"); d = d2 + d1; print(d)'')" >>
+        $GITHUB_OUTPUT
 
+        '
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
+
+        '
   run_examples_gpu:
     name: Examples directory
     strategy:
       fail-fast: false
       matrix:
-        machine_type: [single-gpu]
-    runs-on: ${{ format('{0}-{1}', matrix.machine_type, 'docker') }}
+        machine_type:
+        - single-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
-      # options: --gpus 0 --shm-size "16gb" --ipc host
     needs: setup
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: git fetch && git checkout ${{ github.sha }}
+    - name: Update clone
+      working-directory: /transformers
+      run: git fetch && git checkout ${{ github.sha }}
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Environment
+      working-directory: /transformers
+      run: 'python3 utils/print_env.py
 
-      - name: Environment
-        working-directory: /transformers
-        run: |
-          python3 utils/print_env.py
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - name: Run examples tests on GPU
+      working-directory: /transformers
+      run: 'python3 -m pytest -v examples/pytorch/test_accelerate_examples.py::ExamplesTestsNoTrainer::test_run_image_classification_no_trainer
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        ls -l mycache/datasets
 
-      - name: Run examples tests on GPU
-        working-directory: /transformers
-#          pip install -r examples/pytorch/_tests_requirements.txt
-        run: |
-          python3 -m pytest -v examples/pytorch/test_accelerate_examples.py::ExamplesTestsNoTrainer::test_run_image_classification_no_trainer
-          ls -l mycache/datasets
-          ls -l mycache/datasets/downloads
-          ls -l mycache/datasets/hf-internal-testing___cats_vs_dogs_sample
-          ls -l mycache/datasets/downloads/extracted
+        ls -l mycache/datasets/downloads
+
+        ls -l mycache/datasets/hf-internal-testing___cats_vs_dogs_sample
+
+        ls -l mycache/datasets/downloads/extracted
+
+        '
