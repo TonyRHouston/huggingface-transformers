@@ -1,21 +1,20 @@
 name: Self-hosted runner (scheduled)
-
 on:
   push:
     branches:
-      - check_limit
-
+    - check_limit
 env:
   NUM_SLICES: 1
   FAKE_NUM_SLICES: 4
-
 jobs:
   setup:
     name: Setup
     strategy:
       matrix:
-        machine_type: [single-gpu, multi-gpu]
-    runs-on: [self-hosted, yih-dar-shieh-temp-runner-for-testing-workflow-file]
+        machine_type:
+        - single-gpu
+        - multi-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -23,40 +22,45 @@ jobs:
       folder_slices: ${{ steps.set-matrix.outputs.folder_slices }}
       slice_ids: ${{ steps.set-matrix.outputs.slice_ids }}
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: |
-          git fetch && git checkout ${{ github.sha }}
+    - name: Update clone
+      working-directory: /transformers
+      run: 'git fetch && git checkout ${{ github.sha }}
 
-      - name: Cleanup
-        working-directory: /transformers
-        run: |
-          rm -rf tests/__pycache__
-          rm -rf tests/models/__pycache__
-          rm -rf reports
+        '
+    - name: Cleanup
+      working-directory: /transformers
+      run: 'rm -rf tests/__pycache__
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        rm -rf tests/models/__pycache__
 
-      - id: set-matrix
-        name: Identify models to test
-        working-directory: /transformers/tests
-        run: |
-          echo "folder_slices=$(python3 ../utils/split_model_tests.py)" >> $GITHUB_OUTPUT
-          echo "slice_ids=$(python3 -c 'd = list(range(${{ env.FAKE_NUM_SLICES }})); print(d)')" >> $GITHUB_OUTPUT
+        rm -rf reports
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - id: set-matrix
+      name: Identify models to test
+      working-directory: /transformers/tests
+      run: 'echo "folder_slices=$(python3 ../utils/split_model_tests.py)" >> $GITHUB_OUTPUT
 
+        echo "slice_ids=$(python3 -c ''d = list(range(${{ env.FAKE_NUM_SLICES }}));
+        print(d)'')" >> $GITHUB_OUTPUT
+
+        '
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
+
+        '
   run_tests_gpu:
-    name: " "
+    name: ' '
     needs: setup
     strategy:
       fail-fast: false
       matrix:
-        machine_type: [single-gpu, multi-gpu]
+        machine_type:
+        - single-gpu
+        - multi-gpu
         slice_id: ${{ fromJSON(needs.setup.outputs.slice_ids) }}
     uses: ./.github/workflows/model_jobs.yml
     with:
