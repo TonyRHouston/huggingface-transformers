@@ -1,14 +1,11 @@
 name: Doctests
-
 on:
   push:
     branches:
-      - run_fc639143_003
-  repository_dispatch:
+    - run_fc639143_003
+  repository_dispatch: null
   schedule:
-    - cron: "17 2 * * *"
-
-
+  - cron: 17 2 * * *
 env:
   HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
@@ -17,77 +14,80 @@ env:
   MKL_NUM_THREADS: 16
   SIGOPT_API_TOKEN: ${{ secrets.SIGOPT_API_TOKEN }}
   TF_FORCE_GPU_ALLOW_GROWTH: true
-
 jobs:
   run_doctests:
-    runs-on: [single-gpu, nvidia-gpu, yih-dar-shieh-debug-doctest, doctest-ci]
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     steps:
-      - name: uninstall transformers (installed during docker image build)
-        run: python3 -m pip uninstall -y transformers
+    - name: uninstall transformers (installed during docker image build)
+      run: python3 -m pip uninstall -y transformers
+    - uses: actions/checkout@v3
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
 
-      - uses: actions/checkout@v3
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Install transformers in edit mode
+      run: python3 -m pip install -e .[flax]
+    - name: GPU visibility
+      run: 'python3 utils/print_env.py
 
-      - name: Install transformers in edit mode
-        run: python3 -m pip install -e .[flax]
+        '
+    - name: Uninstall and reInstall torch
+      run: 'python3 -m pip install -U torch==2.1.0 torchvision torchaudio --index-url
+        https://download.pytorch.org/whl/cu118
 
-      - name: GPU visibility
-        run: |
-          python3 utils/print_env.py
+        python3 -m pip uninstall -y accelerate && python3 -m pip install -U accelerate@git+https://github.com/huggingface/accelerate@c3ec7ff5a9e1e3bddd3be0061e6362ff1bcb08a1
 
-      - name: Uninstall and reInstall torch
-        run: |
-          python3 -m pip install -U torch==2.1.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-          python3 -m pip uninstall -y accelerate && python3 -m pip install -U accelerate@git+https://github.com/huggingface/accelerate@c3ec7ff5a9e1e3bddd3be0061e6362ff1bcb08a1
-          python3 -m pip uninstall -y peft && python3 -m pip install -U peft@git+https://github.com/huggingface/peft@2464c572eba6b60a9d19ba1913fcec6bc0a2724b
-          python3 -m pip install -U alembic==1.12.0 dash==2.14.0 Flask==2.2.5 onnx==1.14.1 plac==1.4.0 plotly==5.17.0 Werkzeug==2.2.3
-          python3 -m pip uninstall -y blinker
-#          python3 -m pip install -U cmake==3.25.0
-#          python3 -m pip install -U lit==15.0.7
+        python3 -m pip uninstall -y peft && python3 -m pip install -U peft@git+https://github.com/huggingface/peft@2464c572eba6b60a9d19ba1913fcec6bc0a2724b
 
-      - name: Show installed libraries and their versions
-        run: pip freeze
+        python3 -m pip install -U alembic==1.12.0 dash==2.14.0 Flask==2.2.5 onnx==1.14.1
+        plac==1.4.0 plotly==5.17.0 Werkzeug==2.2.3
 
-      - name: Get doctest files
-        run: |
-          $(python3 -c 'from utils.tests_fetcher import get_all_doctest_files; to_test = get_all_doctest_files(); to_test = " ".join(to_test); fp = open("doc_tests.txt", "w"); fp.write(to_test); fp.close()')
+        python3 -m pip uninstall -y blinker
 
-      - name: Run doctests
-        run: |
-          python3 -m pytest -v --make-reports doc_tests_gpu --doctest-modules $(cat doc_tests.txt) -sv --doctest-continue-on-failure --doctest-glob="*.md"
+        '
+    - name: Show installed libraries and their versions
+      run: pip freeze
+    - name: Get doctest files
+      run: '$(python3 -c ''from utils.tests_fetcher import get_all_doctest_files;
+        to_test = get_all_doctest_files(); to_test = " ".join(to_test); fp = open("doc_tests.txt",
+        "w"); fp.write(to_test); fp.close()'')
 
-      - name: Failure short reports
-        if: ${{ failure() }}
-        continue-on-error: true
-        run: cat reports/doc_tests_gpu/failures_short.txt
+        '
+    - name: Run doctests
+      run: 'python3 -m pytest -v --make-reports doc_tests_gpu --doctest-modules $(cat
+        doc_tests.txt) -sv --doctest-continue-on-failure --doctest-glob="*.md"
 
-      - name: Test suite reports artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v3
-        with:
-          name: doc_tests_gpu_test_reports
-          path: reports/doc_tests_gpu
-
-
+        '
+    - name: Failure short reports
+      if: ${{ failure() }}
+      continue-on-error: true
+      run: cat reports/doc_tests_gpu/failures_short.txt
+    - name: Test suite reports artifacts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: doc_tests_gpu_test_reports
+        path: reports/doc_tests_gpu
   send_results:
     name: Send results to webhook
     runs-on: ubuntu-latest
     if: always()
-    needs: [run_doctests]
+    needs:
+    - run_doctests
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/download-artifact@v3
-      - name: Send message to Slack
-        env:
-          CI_SLACK_BOT_TOKEN: ${{ secrets.CI_SLACK_BOT_TOKEN }}
-          CI_SLACK_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY_DOCS }}
-          CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY_DOCS }}
-          CI_SLACK_CHANNEL_DUMMY_TESTS: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
-        run: |
-          pip install slack_sdk
-          python utils/notification_service_doc_tests.py
+    - uses: actions/checkout@v3
+    - uses: actions/download-artifact@v3
+    - name: Send message to Slack
+      env:
+        CI_SLACK_BOT_TOKEN: ${{ secrets.CI_SLACK_BOT_TOKEN }}
+        CI_SLACK_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY_DOCS }}
+        CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY_DOCS }}
+        CI_SLACK_CHANNEL_DUMMY_TESTS: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
+      run: 'pip install slack_sdk
+
+        python utils/notification_service_doc_tests.py
+
+        '
