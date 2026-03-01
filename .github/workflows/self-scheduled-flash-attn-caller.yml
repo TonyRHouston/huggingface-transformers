@@ -7,7 +7,7 @@ env:
 jobs:
   setup:
     name: Setup
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Setup
       run: 'mkdir "setup_values"
