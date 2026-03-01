@@ -1,20 +1,19 @@
 name: Self-hosted runner (scheduled)
-
-
 on:
   push:
     branches:
-      - debug_get_jobs
-
+    - debug_get_jobs
 jobs:
   setup:
     name: Setup
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       ACCESS_REPO_INFO_TOKEN: ${{ secrets.ACCESS_REPO_INFO_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - name: setup
-        run: |
-          sudo apt-get install -y curl
-          python debug_get_jobs.py
+    - uses: actions/checkout@v4
+    - name: setup
+      run: 'sudo apt-get install -y curl
+
+        python debug_get_jobs.py
+
+        '
