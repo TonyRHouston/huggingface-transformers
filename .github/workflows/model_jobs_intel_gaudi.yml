@@ -16,8 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         folders: ${{ fromJson(inputs.folder_slices)[inputs.slice_id] }}
-    runs-on:
-      group: ${{ inputs.runner }}
+    runs-on: ubuntu-latest
     container:
       image: vault.habana.ai/gaudi-docker/1.21.1/ubuntu22.04/habanalabs/pytorch-installer-2.6.0:latest
       options: --runtime=habana -v /mnt/cache/.cache/huggingface:/mnt/cache/.cache/huggingface
