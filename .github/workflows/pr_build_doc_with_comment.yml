@@ -25,7 +25,7 @@ jobs:
   verity_pr_commit:
     name: Verity PR commit corresponds to a specific event by comparing timestamps
     if: ${{ needs.get-pr-number.outputs.PR_NUMBER != ''}}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     needs: get-pr-info
     env:
       COMMENT_DATE: ${{ github.event.comment.created_at }}
@@ -47,7 +47,7 @@ jobs:
     if: ${{ needs.get-pr-number.outputs.PR_NUMBER != '' }}
     permissions:
       statuses: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Create Run
       id: create_run
@@ -68,7 +68,7 @@ jobs:
     - create_run
     permissions:
       pull-requests: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Reply to the comment
       env:
@@ -101,7 +101,7 @@ jobs:
     permissions:
       statuses: write
     if: ${{ always() && needs.create_run.result == 'success' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{
