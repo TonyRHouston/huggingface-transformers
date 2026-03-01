@@ -17,8 +17,7 @@ jobs:
       matrix:
         run_idx:
         - 1
-    runs-on:
-      group: aws-g5-4xlarge-cache
+    runs-on: ubuntu-latest
     outputs:
       process: ${{ steps.check_file.outputs.process }}
     container:
@@ -149,8 +148,7 @@ jobs:
     name: process bad commit reports
     needs: check_new_failures
     if: needs.check_new_failures.outputs.process == 'true'
-    runs-on:
-      group: aws-g5-4xlarge-cache
+    runs-on: ubuntu-latest
     container:
       image: ${{ inputs.docker }}
       options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
