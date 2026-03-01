@@ -3,7 +3,7 @@ on:
   workflow_dispatch: {}
 jobs:
   get-pr-number:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     name: Get PR number
     outputs:
       PR_NUMBER: ${{ steps.set_pr_number.outputs.PR_NUMBER }}
