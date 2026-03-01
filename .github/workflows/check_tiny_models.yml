@@ -1,92 +1,56 @@
 name: Check Tiny Models
-
 on:
   push:
     branches:
-      - debug_tiny_model_creation
-  repository_dispatch:
+    - debug_tiny_model_creation
+  repository_dispatch: null
   schedule:
-    - cron: "0 2 * * *"
-
+  - cron: 0 2 * * *
 env:
   TOKEN: ${{ secrets.TRANSFORMERS_HUB_BOT_HF_TOKEN }}
   HF_TOKEN: ${{ secrets.HF_HUB_READ_TOKEN }}
   TRANSFORMERS_IS_CI: yes
   TF_FORCE_GPU_ALLOW_GROWTH: true
-
 jobs:
   check_tiny_models:
     name: Check tiny models
-    runs-on:
-      group: aws-general-8-plus
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-quantization-latest-gpu
       options: --shm-size "16gb" --ipc host
     steps:
-#      - name: Check cache
-#        working-directory: /transformers
-#        run: ls -la /mnt/cache/
+    - name: Update clone
+      working-directory: /transformers
+      run: git fetch && git checkout ${{ github.sha }}
+    - name: Reinstall transformers in edit mode (remove the one installed during docker
+        image build)
+      working-directory: /transformers
+      run: 'python3 -m pip uninstall -y transformers && python3 -m pip install -e
+        .
 
-      - name: Update clone
-        working-directory: /transformers
-        run: git fetch && git checkout ${{ github.sha }}
+        python3 -m pip install -U essentia librosa pretty_midi
 
-      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
-        working-directory: /transformers
-        run: |
-          python3 -m pip uninstall -y transformers && python3 -m pip install -e .
-          python3 -m pip install -U essentia librosa pretty_midi
-          python3 -m pip uninstall -y natten
+        python3 -m pip uninstall -y natten
 
-      - name: Create all tiny models (locally)
-        run: |
-          free -g
+        '
+    - name: Create all tiny models (locally)
+      run: 'free -g
 
-      - name: Create all tiny models (locally)
-        working-directory: /transformers
-        run: |
-          CUDA_VISIBLE_DEVICES="" python3 utils/create_dummy_models.py tiny_local_models --all --num_workers 7
+        '
+    - name: Create all tiny models (locally)
+      working-directory: /transformers
+      run: 'CUDA_VISIBLE_DEVICES="" python3 utils/create_dummy_models.py tiny_local_models
+        --all --num_workers 7
 
-      - name: Create all tiny models (locally)
-        working-directory: /transformers
-        run: |
-          python3 utils/check_tiny.py
+        '
+    - name: Create all tiny models (locally)
+      working-directory: /transformers
+      run: 'python3 utils/check_tiny.py
 
-      - name: Local tiny model reports artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tiny_local_model_creation_reports
-          path: /transformers/tiny_local_models/reports
-#
-#      # GitHub-hosted runners have 2-core CPUs
-#      - name: Run pipeline tests against all new (local) tiny models
-#        run: |
-#          OMP_NUM_THREADS=1 TRANSFORMERS_TINY_MODEL_PATH=tiny_local_models python -m pytest --max-worker-restart=0 -n 2 --dist=loadfile -s -rA --make-reports=tests_pipelines tests/models -m is_pipeline_test -k "test_pipeline_" | tee tests_output.txt
-#
-#      - name: Test suite reports artifacts
-#        if: ${{ always() }}
-#        uses: actions/upload-artifact@v4
-#        with:
-#          name: tiny_local_model_creation_reports
-#          path: reports/tests_pipelines
-#
-#      - name: Create + Upload tiny models for new model architecture(s)
-#        run: |
-#          python utils/update_tiny_models.py --num_workers 2
-#
-#      - name: Full report
-#        run: cat tiny_models/reports/tiny_model_creation_report.json
-#
-#      - name: Failure report
-#        run: cat tiny_models/reports/simple_failed_report.txt
-#
-#      - name: Summary report
-#        run: cat tiny_models/reports/tiny_model_summary.json
-#
-#      - name: New tiny model creation reports artifacts
-#        if: ${{ always() }}
-#        uses: actions/upload-artifact@v4
-#        with:
-#          name: tiny_model_creation_reports
-#          path: tiny_models/reports
+        '
+    - name: Local tiny model reports artifacts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: tiny_local_model_creation_reports
+        path: /transformers/tiny_local_models/reports
