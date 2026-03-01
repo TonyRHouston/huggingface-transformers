@@ -93,8 +93,7 @@ jobs:
         machine_type:
         - 1gaudi
         - 2gaudi
-    runs-on:
-      group: ${{ inputs.runner_scale_set }}-${{ matrix.machine_type }}
+    runs-on: ubuntu-latest
     container:
       image: vault.habana.ai/gaudi-docker/1.21.1/ubuntu22.04/habanalabs/pytorch-installer-2.6.0:latest
       options: --runtime=habana -v /mnt/cache/.cache/huggingface:/mnt/cache/.cache/huggingface
@@ -153,8 +152,7 @@ jobs:
       matrix:
         machine_type:
         - 1gaudi
-    runs-on:
-      group: ${{ inputs.runner_scale_set }}-${{ matrix.machine_type }}
+    runs-on: ubuntu-latest
     container:
       image: vault.habana.ai/gaudi-docker/1.21.1/ubuntu22.04/habanalabs/pytorch-installer-2.6.0:latest
       options: --runtime=habana -v /mnt/cache/.cache/huggingface:/mnt/cache/.cache/huggingface
@@ -220,8 +218,7 @@ jobs:
         machine_type:
         - 1gaudi
         - 2gaudi
-    runs-on:
-      group: ${{ inputs.runner_scale_set }}-${{ matrix.machine_type }}
+    runs-on: ubuntu-latest
     container:
       image: vault.habana.ai/gaudi-docker/1.21.1/ubuntu22.04/habanalabs/pytorch-installer-2.6.0:latest
       options: --runtime=habana -v /mnt/cache/.cache/huggingface:/mnt/cache/.cache/huggingface
