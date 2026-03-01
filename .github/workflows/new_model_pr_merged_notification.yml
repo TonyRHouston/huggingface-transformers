@@ -4,7 +4,7 @@ on:
 jobs:
   notify_new_model:
     name: Notify new model
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
       with:
