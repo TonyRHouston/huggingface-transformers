@@ -1,16 +1,8 @@
 name: Self-hosted runner (scheduled)
-
-# Note that each job's dependencies go into a corresponding docker file.
-#
-# For example for `run_all_tests_torch_cuda_extensions_gpu` the docker image is
-# `huggingface/transformers-pytorch-deepspeed-latest-gpu`, which can be found at
-# `docker/transformers-pytorch-deepspeed-latest-gpu/Dockerfile`
-
 on:
   push:
     branches:
-      - try_fix_whisper_slow_test
-
+    - try_fix_whisper_slow_test
 env:
   HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
@@ -22,91 +14,97 @@ env:
   TF_FORCE_GPU_ALLOW_GROWTH: true
   RUN_PT_TF_CROSS_TESTS: 1
   CUDA_VISIBLE_DEVICES: 0,1
-
 jobs:
   setup:
     name: Setup
     strategy:
       matrix:
-        machine_type: [single-gpu]
-    runs-on: ['${{ matrix.machine_type }}', nvidia-gpu, t4, daily-ci]
+        machine_type:
+        - single-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: |
-          git fetch && git checkout ${{ github.sha }}
+    - name: Update clone
+      working-directory: /transformers
+      run: 'git fetch && git checkout ${{ github.sha }}
 
-      - name: Cleanup
-        working-directory: /transformers
-        run: |
-          rm -rf tests/__pycache__
-          rm -rf tests/models/__pycache__
-          rm -rf reports
+        '
+    - name: Cleanup
+      working-directory: /transformers
+      run: 'rm -rf tests/__pycache__
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        rm -rf tests/models/__pycache__
 
-      - id: set-matrix
-        name: Identify models to test
-        working-directory: /transformers/tests
-        run: |
-          echo "matrix=$(python3 -c 'import os; tests = os.getcwd(); model_tests = os.listdir(os.path.join(tests, "models")); d1 = sorted(list(filter(os.path.isdir, os.listdir(tests)))); d2 = sorted(list(filter(os.path.isdir, [f"models/{x}" for x in model_tests]))); d1.remove("models"); d = d2[:1]; print(d)')" >> $GITHUB_OUTPUT
+        rm -rf reports
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - id: set-matrix
+      name: Identify models to test
+      working-directory: /transformers/tests
+      run: 'echo "matrix=$(python3 -c ''import os; tests = os.getcwd(); model_tests
+        = os.listdir(os.path.join(tests, "models")); d1 = sorted(list(filter(os.path.isdir,
+        os.listdir(tests)))); d2 = sorted(list(filter(os.path.isdir, [f"models/{x}"
+        for x in model_tests]))); d1.remove("models"); d = d2[:1]; print(d)'')" >>
+        $GITHUB_OUTPUT
 
+        '
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
+
+        '
   run_tests_single_gpu:
     name: Model tests
     strategy:
       fail-fast: false
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
-        machine_type: [single-gpu]
-    runs-on: yih-dar-shieh-temp-runner-for-testing-workflow-file
+        machine_type:
+        - single-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     needs: setup
     steps:
-      - name: Echo folder ${{ matrix.folders }}
-        shell: bash
-        # For folders like `models/bert`, set an env. var. (`matrix_folders`) to `models_bert`, which will be used to
-        # set the artifact folder names (because the character `/` is not allowed).
-        run: |
-          echo "${{ matrix.folders }}"
-          matrix_folders=${{ matrix.folders }}
-          matrix_folders=${matrix_folders/'models/'/'models_'}
-          echo "$matrix_folders"
-          echo "matrix_folders=$matrix_folders" >> $GITHUB_ENV
+    - name: Echo folder ${{ matrix.folders }}
+      shell: bash
+      run: 'echo "${{ matrix.folders }}"
 
-      - name: Update clone
-        working-directory: /transformers
-        run: git fetch && git checkout ${{ github.sha }}
+        matrix_folders=${{ matrix.folders }}
 
-      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
-        working-directory: /transformers
-        run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
+        matrix_folders=${matrix_folders/''models/''/''models_''}
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        echo "$matrix_folders"
 
-      - name: Environment
-        working-directory: /transformers
-        run: |
-          python3 utils/print_env.py
+        echo "matrix_folders=$matrix_folders" >> $GITHUB_ENV
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        '
+    - name: Update clone
+      working-directory: /transformers
+      run: git fetch && git checkout ${{ github.sha }}
+    - name: Reinstall transformers in edit mode (remove the one installed during docker
+        image build)
+      working-directory: /transformers
+      run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
 
-      - name: Run all tests on GPU
-        working-directory: /transformers
-        run: python3 temp6.py
+        '
+    - name: Environment
+      working-directory: /transformers
+      run: 'python3 utils/print_env.py
+
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - name: Run all tests on GPU
+      working-directory: /transformers
+      run: python3 temp6.py
