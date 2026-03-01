@@ -1,42 +1,40 @@
 name: Build docker images (scheduled)
-
 on:
   push:
     branches:
-      - trigger_run_amd_scheduled_ci_caller_deepspeed_test
-  repository_dispatch:
+    - trigger_run_amd_scheduled_ci_caller_deepspeed_test
+  repository_dispatch: null
   workflow_call:
     inputs:
       image_postfix:
         required: true
         type: string
   schedule:
-    - cron: "17 0 * * *"
-
+  - cron: 17 0 * * *
 concurrency:
   group: docker-images-builds
   cancel-in-progress: false
-
 jobs:
-   latest-pytorch-deepspeed-amd:
-     name: "PyTorch + DeepSpeed (AMD) [dev]"
+  latest-pytorch-deepspeed-amd:
+    name: PyTorch + DeepSpeed (AMD) [dev]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Check out code
+      uses: actions/checkout@v3
+    - name: Login to DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+    - name: Build and push
+      uses: docker/build-push-action@v5
+      with:
+        context: ./docker/transformers-pytorch-deepspeed-amd-gpu
+        build-args: 'REF=main
 
-     runs-on: [yih-dar-shieh-debug-daily,multi-gpu]
-     steps:
-       - name: Set up Docker Buildx
-         uses: docker/setup-buildx-action@v3
-       - name: Check out code
-         uses: actions/checkout@v3
-       - name: Login to DockerHub
-         uses: docker/login-action@v3
-         with:
-           username: ${{ secrets.DOCKERHUB_USERNAME }}
-           password: ${{ secrets.DOCKERHUB_PASSWORD }}
-       - name: Build and push
-         uses: docker/build-push-action@v5
-         with:
-           context: ./docker/transformers-pytorch-deepspeed-amd-gpu
-           build-args: |
-             REF=main
-           push: true
-           tags: huggingface/transformers-pytorch-deepspeed-amd-gpu${{ inputs.image_postfix }}
+          '
+        push: true
+        tags: huggingface/transformers-pytorch-deepspeed-amd-gpu${{ inputs.image_postfix
+          }}
