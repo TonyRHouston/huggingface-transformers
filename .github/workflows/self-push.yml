@@ -1,32 +1,33 @@
 name: Self-hosted runner (push)
-
 on:
   push:
     branches:
-      - try_matrix_fail
-
+    - try_matrix_fail
 jobs:
   setup:
     name: Setup
     strategy:
       fail-fast: false
       matrix:
-        machine_type: [single-gpu, multi-gpu, no-gpu]
-    runs-on: ubuntu-22.04
-
+        machine_type:
+        - single-gpu
+        - multi-gpu
+        - no-gpu
+    runs-on: ubuntu-latest
     steps:
-      - name: step 1
-        shell: bash
-        run: |
-            ls -l
+    - name: step 1
+      shell: bash
+      run: 'ls -l
 
-      - name: step 2
-        shell: bash
-        run: |
-            llllllls -l
+        '
+    - name: step 2
+      shell: bash
+      run: 'llllllls -l
 
-      - name: step 3
-        if: cancelled() != true
-        shell: bash
-        run: |
-            ls -l
+        '
+    - name: step 3
+      if: cancelled() != true
+      shell: bash
+      run: 'ls -l
+
+        '
