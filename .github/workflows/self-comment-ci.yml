@@ -35,7 +35,7 @@ jobs:
       pr_number: ${{ needs.get-pr-number.outputs.PR_NUMBER }}
   check-timestamps:
     name: Check timestamps (security check)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     needs: get-pr-info
     outputs:
       PR_HEAD_SHA: ${{ needs.get-pr-info.outputs.PR_HEAD_SHA }}
@@ -52,7 +52,7 @@ jobs:
         \ request is newer than the issue comment triggering this run! Abort!\";\n\
         \  exit -1;\nfi\n"
   get-tests:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     needs:
     - get-pr-number
     - check-timestamps
@@ -106,7 +106,7 @@ jobs:
     - get-tests
     permissions:
       pull-requests: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Reply to the comment
       env:
@@ -131,7 +131,7 @@ jobs:
     - get-tests
     permissions:
       pull-requests: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Reply to the comment
       env:
@@ -154,7 +154,7 @@ jobs:
     - reply_to_comment
     permissions:
       statuses: write
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Create Run
       id: create_run
@@ -219,7 +219,7 @@ jobs:
       pull-requests: write
       statuses: write
     if: ${{ always() && needs.create_run.result == 'success' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v4
       with:
