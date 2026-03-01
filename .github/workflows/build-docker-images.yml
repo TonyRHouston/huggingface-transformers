@@ -1,46 +1,39 @@
 name: Build docker images (scheduled)
-
 on:
   push:
     branches:
-      - trigger_ci_with_torch_2.9.0.rc_1_on_commit_bb45d36_xxx
-  repository_dispatch:
+    - trigger_ci_with_torch_2.9.0.rc_1_on_commit_bb45d36_xxx
+  repository_dispatch: null
   workflow_call:
     inputs:
       image_postfix:
         required: true
         type: string
   schedule:
-    - cron: "17 0 * * *"
-
+  - cron: 17 0 * * *
 concurrency:
   group: docker-images-builds
   cancel-in-progress: false
-
 jobs:
   latest-docker:
-    name: "Latest PyTorch [dev]"
-    runs-on:
-      group: aws-general-8-plus
+    name: Latest PyTorch [dev]
+    runs-on: ubuntu-latest
     steps:
-      -
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      -
-        name: Check out code
-        uses: actions/checkout@v4
-      -
-        name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-      -
-        name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: ./docker/transformers-all-latest-gpu
-          build-args: |
-            REF=main
-          push: true
-          tags: huggingface/transformers-all-latest-gpu-test
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Check out code
+      uses: actions/checkout@v4
+    - name: Login to DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+    - name: Build and push
+      uses: docker/build-push-action@v5
+      with:
+        context: ./docker/transformers-all-latest-gpu
+        build-args: 'REF=main
+
+          '
+        push: true
+        tags: huggingface/transformers-all-latest-gpu-test
