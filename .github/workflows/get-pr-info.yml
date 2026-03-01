@@ -7,64 +7,70 @@ on:
         type: string
     outputs:
       PR_HEAD_REPO_FULL_NAME:
-        description: "The full name of the repository from which the pull request is created"
+        description: The full name of the repository from which the pull request is
+          created
         value: ${{ jobs.get-pr-info.outputs.PR_HEAD_REPO_FULL_NAME }}
       PR_BASE_REPO_FULL_NAME:
-        description: "The full name of the repository to which the pull request is created"
+        description: The full name of the repository to which the pull request is
+          created
         value: ${{ jobs.get-pr-info.outputs.PR_BASE_REPO_FULL_NAME }}
       PR_HEAD_REPO_OWNER:
-        description: "The owner of the repository from which the pull request is created"
+        description: The owner of the repository from which the pull request is created
         value: ${{ jobs.get-pr-info.outputs.PR_HEAD_REPO_OWNER }}
       PR_BASE_REPO_OWNER:
-        description: "The owner of the repository to which the pull request is created"
+        description: The owner of the repository to which the pull request is created
         value: ${{ jobs.get-pr-info.outputs.PR_BASE_REPO_OWNER }}
       PR_HEAD_REPO_NAME:
-        description: "The name of the repository from which the pull request is created"
+        description: The name of the repository from which the pull request is created
         value: ${{ jobs.get-pr-info.outputs.PR_HEAD_REPO_NAME }}
       PR_BASE_REPO_NAME:
-        description: "The name of the repository to which the pull request is created"
+        description: The name of the repository to which the pull request is created
         value: ${{ jobs.get-pr-info.outputs.PR_BASE_REPO_NAME }}
       PR_HEAD_REF:
-        description: "The branch name of the pull request in the head repository"
+        description: The branch name of the pull request in the head repository
         value: ${{ jobs.get-pr-info.outputs.PR_HEAD_REF }}
       PR_BASE_REF:
-        description: "The branch name in the base repository (to merge into)"
+        description: The branch name in the base repository (to merge into)
         value: ${{ jobs.get-pr-info.outputs.PR_BASE_REF }}
       PR_HEAD_SHA:
-        description: "The head sha of the pull request branch in the head repository"
+        description: The head sha of the pull request branch in the head repository
         value: ${{ jobs.get-pr-info.outputs.PR_HEAD_SHA }}
       PR_BASE_SHA:
-        description: "The head sha of the target branch in the base repository"
+        description: The head sha of the target branch in the base repository
         value: ${{ jobs.get-pr-info.outputs.PR_BASE_SHA }}
       PR_MERGE_COMMIT_SHA:
-        description: "The sha of the merge commit for the pull request (created by GitHub) in the base repository"
+        description: The sha of the merge commit for the pull request (created by
+          GitHub) in the base repository
         value: ${{ jobs.get-pr-info.outputs.PR_MERGE_COMMIT_SHA }}
       PR_MERGE_COMMIT_BASE_SHA:
-        description: "The sha of the parent commit of the the merge commit on the target branch in the base repository"
+        description: The sha of the parent commit of the the merge commit on the target
+          branch in the base repository
         value: ${{ jobs.get-pr-info.outputs.PR_MERGE_COMMIT_BASE_SHA }}
       PR_HEAD_COMMIT_DATE:
-        description: "The date of the head sha of the pull request branch in the head repository"
+        description: The date of the head sha of the pull request branch in the head
+          repository
         value: ${{ jobs.get-pr-info.outputs.PR_HEAD_COMMIT_DATE }}
       PR_MERGE_COMMIT_DATE:
-        description: "The date of the merge commit for the pull request (created by GitHub) in the base repository"
+        description: The date of the merge commit for the pull request (created by
+          GitHub) in the base repository
         value: ${{ jobs.get-pr-info.outputs.PR_MERGE_COMMIT_DATE }}
       PR_HEAD_COMMIT_TIMESTAMP:
-        description: "The timestamp of the head sha of the pull request branch in the head repository"
+        description: The timestamp of the head sha of the pull request branch in the
+          head repository
         value: ${{ jobs.get-pr-info.outputs.PR_HEAD_COMMIT_TIMESTAMP }}
       PR_MERGE_COMMIT_TIMESTAMP:
-        description: "The timestamp of the merge commit for the pull request (created by GitHub) in the base repository"
+        description: The timestamp of the merge commit for the pull request (created
+          by GitHub) in the base repository
         value: ${{ jobs.get-pr-info.outputs.PR_MERGE_COMMIT_TIMESTAMP }}
       PR:
-        description: "The PR"
+        description: The PR
         value: ${{ jobs.get-pr-info.outputs.PR }}
       PR_FILES:
-        description: "The files touched in the PR"
+        description: The files touched in the PR
         value: ${{ jobs.get-pr-info.outputs.PR_FILES }}
-
-
 jobs:
   get-pr-info:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     name: Get PR commit SHA better
     outputs:
       PR_HEAD_REPO_FULL_NAME: ${{ steps.pr_info.outputs.head_repo_full_name }}
@@ -81,87 +87,59 @@ jobs:
       PR_MERGE_COMMIT_SHA: ${{ steps.pr_info.outputs.merge_commit_sha }}
       PR_HEAD_COMMIT_DATE: ${{ steps.pr_info.outputs.head_commit_date }}
       PR_MERGE_COMMIT_DATE: ${{ steps.pr_info.outputs.merge_commit_date }}
-      PR_HEAD_COMMIT_TIMESTAMP: ${{ steps.get_timestamps.outputs.head_commit_timestamp }}
-      PR_MERGE_COMMIT_TIMESTAMP: ${{ steps.get_timestamps.outputs.merge_commit_timestamp }}
+      PR_HEAD_COMMIT_TIMESTAMP: ${{ steps.get_timestamps.outputs.head_commit_timestamp
+        }}
+      PR_MERGE_COMMIT_TIMESTAMP: ${{ steps.get_timestamps.outputs.merge_commit_timestamp
+        }}
       PR: ${{ steps.pr_info.outputs.pr }}
       PR_FILES: ${{ steps.pr_info.outputs.files }}
     if: ${{ inputs.pr_number != '' }}
     steps:
-      - name: Extract PR details
-        id: pr_info
-        uses: actions/github-script@v6
-        with:
-          script: |            
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: ${{ inputs.pr_number }}
-            });
+    - name: Extract PR details
+      id: pr_info
+      uses: actions/github-script@v6
+      with:
+        script: "const { data: pr } = await github.rest.pulls.get({\n  owner: context.repo.owner,\n\
+          \  repo: context.repo.repo,\n  pull_number: ${{ inputs.pr_number }}\n});\n\
+          \nconst { data: head_commit }  = await github.rest.repos.getCommit({\n \
+          \ owner: pr.head.repo.owner.login,\n  repo: pr.head.repo.name,\n  ref: pr.head.ref\n\
+          });\n\nconst { data: merge_commit }  = await github.rest.repos.getCommit({\n\
+          \  owner: pr.base.repo.owner.login,\n  repo: pr.base.repo.name,\n  ref:\
+          \ pr.merge_commit_sha,\n});\n\nconst { data: files } = await github.rest.pulls.listFiles({\n\
+          \  owner: context.repo.owner,\n  repo: context.repo.repo,\n  pull_number:\
+          \ ${{ inputs.pr_number }}\n});\n\ncore.setOutput('head_repo_full_name',\
+          \ pr.head.repo.full_name);\ncore.setOutput('base_repo_full_name', pr.base.repo.full_name);\n\
+          core.setOutput('head_repo_owner', pr.head.repo.owner.login);\ncore.setOutput('base_repo_owner',\
+          \ pr.base.repo.owner.login);\ncore.setOutput('head_repo_name', pr.head.repo.name);\n\
+          core.setOutput('base_repo_name', pr.base.repo.name);\ncore.setOutput('head_ref',\
+          \ pr.head.ref);\ncore.setOutput('base_ref', pr.base.ref);\ncore.setOutput('head_sha',\
+          \ pr.head.sha);\ncore.setOutput('base_sha', pr.base.sha);\ncore.setOutput('merge_commit_base_sha',\
+          \ merge_commit.parents[0].sha);\ncore.setOutput('merge_commit_sha', pr.merge_commit_sha);\n\
+          core.setOutput('pr', pr);\n\ncore.setOutput('head_commit_date', head_commit.commit.committer.date);\n\
+          core.setOutput('merge_commit_date', merge_commit.commit.committer.date);\n\
+          \ncore.setOutput('files', files);            \n\nconsole.log('PR head commit:',\
+          \ {\n  head_commit: head_commit,\n  commit: head_commit.commit,\n  date:\
+          \ head_commit.commit.committer.date\n});\n\nconsole.log('PR merge commit:',\
+          \ {\n  merge_commit: merge_commit,\n  commit: merge_commit.commit,\n  date:\
+          \ merge_commit.commit.committer.date\n});\n\nconsole.log('PR Info:', {\n\
+          \  pr_info: pr\n});\n"
+    - name: Convert dates to timestamps
+      id: get_timestamps
+      env:
+        head_commit_date: ${{ steps.pr_info.outputs.head_commit_date }}
+        merge_commit_date: ${{ steps.pr_info.outputs.merge_commit_date }}
+      run: 'echo "$head_commit_date"
 
-            const { data: head_commit }  = await github.rest.repos.getCommit({
-              owner: pr.head.repo.owner.login,
-              repo: pr.head.repo.name,
-              ref: pr.head.ref
-            });
+        echo "$merge_commit_date"
 
-            const { data: merge_commit }  = await github.rest.repos.getCommit({
-              owner: pr.base.repo.owner.login,
-              repo: pr.base.repo.name,
-              ref: pr.merge_commit_sha,
-            });
+        head_commit_timestamp=$(date -d "$head_commit_date" +%s)
 
-            const { data: files } = await github.rest.pulls.listFiles({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: ${{ inputs.pr_number }}
-            });
+        merge_commit_timestamp=$(date -d "$merge_commit_date" +%s)
 
-            core.setOutput('head_repo_full_name', pr.head.repo.full_name);
-            core.setOutput('base_repo_full_name', pr.base.repo.full_name);
-            core.setOutput('head_repo_owner', pr.head.repo.owner.login);
-            core.setOutput('base_repo_owner', pr.base.repo.owner.login);
-            core.setOutput('head_repo_name', pr.head.repo.name);
-            core.setOutput('base_repo_name', pr.base.repo.name);
-            core.setOutput('head_ref', pr.head.ref);
-            core.setOutput('base_ref', pr.base.ref);
-            core.setOutput('head_sha', pr.head.sha);
-            core.setOutput('base_sha', pr.base.sha);
-            core.setOutput('merge_commit_base_sha', merge_commit.parents[0].sha);
-            core.setOutput('merge_commit_sha', pr.merge_commit_sha);
-            core.setOutput('pr', pr);
+        echo "$head_commit_timestamp"
 
-            core.setOutput('head_commit_date', head_commit.commit.committer.date);
-            core.setOutput('merge_commit_date', merge_commit.commit.committer.date);
-            
-            core.setOutput('files', files);            
-            
-            console.log('PR head commit:', {
-              head_commit: head_commit,
-              commit: head_commit.commit,
-              date: head_commit.commit.committer.date
-            });
+        echo "$merge_commit_timestamp"
 
-            console.log('PR merge commit:', {
-              merge_commit: merge_commit,
-              commit: merge_commit.commit,
-              date: merge_commit.commit.committer.date
-            });
+        echo "head_commit_timestamp=$head_commit_timestamp" >> $GITHUB_OUTPUT
 
-            console.log('PR Info:', {
-              pr_info: pr
-            });
-
-      - name: Convert dates to timestamps
-        id: get_timestamps
-        env:
-          head_commit_date: ${{ steps.pr_info.outputs.head_commit_date }}
-          merge_commit_date: ${{ steps.pr_info.outputs.merge_commit_date }}
-        run: |
-          echo "$head_commit_date"
-          echo "$merge_commit_date"
-          head_commit_timestamp=$(date -d "$head_commit_date" +%s)
-          merge_commit_timestamp=$(date -d "$merge_commit_date" +%s)
-          echo "$head_commit_timestamp"
-          echo "$merge_commit_timestamp"
-          echo "head_commit_timestamp=$head_commit_timestamp" >> $GITHUB_OUTPUT
-          echo "merge_commit_timestamp=$merge_commit_timestamp" >> $GITHUB_OUTPUT
+        echo "merge_commit_timestamp=$merge_commit_timestamp" >> $GITHUB_OUTPUT'
