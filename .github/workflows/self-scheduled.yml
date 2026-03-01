@@ -1,41 +1,32 @@
 name: Self-hosted runner (scheduled)
-
-# Note that each job's dependencies go into a corresponding docker file.
-#
-# For example for `run_all_tests_torch_cuda_extensions_gpu` the docker image is
-# `huggingface/transformers-pytorch-deepspeed-latest-gpu`, which can be found at
-# `docker/transformers-pytorch-deepspeed-latest-gpu/Dockerfile`
-
 on:
-  repository_dispatch:
+  repository_dispatch: null
   schedule:
-    - cron: "17 2 * * *"
+  - cron: 17 2 * * *
   push:
     branches:
-      - trigger_test_cached_model_has_minimum_calls_to_head
-
+    - trigger_test_cached_model_has_minimum_calls_to_head
 env:
   HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
   OMP_NUM_THREADS: 8
   MKL_NUM_THREADS: 8
   RUN_SLOW: yes
-  # For gated repositories, we still need to agree to share information on the Hub repo. page in order to get access.
-  # This token is created under the bot `hf-transformers-bot`.
   HF_HUB_READ_TOKEN: ${{ secrets.HF_HUB_READ_TOKEN }}
   SIGOPT_API_TOKEN: ${{ secrets.SIGOPT_API_TOKEN }}
   TF_FORCE_GPU_ALLOW_GROWTH: true
   RUN_PT_TF_CROSS_TESTS: 1
   CUDA_VISIBLE_DEVICES: 0,1
   NUM_SLICES: 2
-
 jobs:
   setup:
     name: Setup
     strategy:
       matrix:
-        machine_type: [single-gpu, multi-gpu]
-    runs-on: ['${{ matrix.machine_type }}', nvidia-gpu, t4, daily-ci]
+        machine_type:
+        - single-gpu
+        - multi-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -43,40 +34,46 @@ jobs:
       folder_slices: ${{ steps.set-matrix.outputs.folder_slices }}
       slice_ids: ${{ steps.set-matrix.outputs.slice_ids }}
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: |
-          git fetch && git checkout ${{ github.sha }}
+    - name: Update clone
+      working-directory: /transformers
+      run: 'git fetch && git checkout ${{ github.sha }}
 
-      - name: Cleanup
-        working-directory: /transformers
-        run: |
-          rm -rf tests/__pycache__
-          rm -rf tests/models/__pycache__
-          rm -rf reports
+        '
+    - name: Cleanup
+      working-directory: /transformers
+      run: 'rm -rf tests/__pycache__
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        rm -rf tests/models/__pycache__
 
-      - id: set-matrix
-        name: Identify models to test
-        working-directory: /transformers/tests
-        run: |
-          echo "folder_slices=$(python3 ../utils/split_model_tests.py --num_splits ${{ env.NUM_SLICES }})" >> $GITHUB_OUTPUT
-          echo "slice_ids=$(python3 -c 'd = list(range(${{ env.NUM_SLICES }})); print(d)')" >> $GITHUB_OUTPUT
+        rm -rf reports
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - id: set-matrix
+      name: Identify models to test
+      working-directory: /transformers/tests
+      run: 'echo "folder_slices=$(python3 ../utils/split_model_tests.py --num_splits
+        ${{ env.NUM_SLICES }})" >> $GITHUB_OUTPUT
 
+        echo "slice_ids=$(python3 -c ''d = list(range(${{ env.NUM_SLICES }})); print(d)'')"
+        >> $GITHUB_OUTPUT
+
+        '
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
+
+        '
   run_tests_gpu:
-    name: " "
+    name: ' '
     needs: setup
     strategy:
       fail-fast: false
       matrix:
-        machine_type: [single-gpu, multi-gpu]
+        machine_type:
+        - single-gpu
+        - multi-gpu
         slice_id: ${{ fromJSON(needs.setup.outputs.slice_ids) }}
     uses: ./.github/workflows/model_jobs.yml
     with:
