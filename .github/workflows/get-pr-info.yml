@@ -3,7 +3,7 @@ on:
   workflow_dispatch: {}
 jobs:
   get-pr-info:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     name: Get PR commit SHA better
     outputs:
       PR_HEAD_REPO_FULL_NAME: ${{ steps.pr_info.outputs.head_repo_full_name }}
