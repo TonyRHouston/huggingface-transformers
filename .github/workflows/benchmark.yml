@@ -15,8 +15,7 @@ jobs:
       matrix:
         group:
         - aws-g5-4xlarge-cache
-    runs-on:
-      group: ${{ matrix.group }}
+    runs-on: ubuntu-latest
     if: '(github.event_name == ''pull_request'' && contains( github.event.pull_request.labels.*.name,
       ''run-benchmark'') )||
 
