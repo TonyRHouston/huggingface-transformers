@@ -5,7 +5,7 @@ jobs:
   close_stale_issues:
     name: Close Stale Issues
     if: github.repository == 'huggingface/transformers'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     permissions:
       issues: write
     env:
