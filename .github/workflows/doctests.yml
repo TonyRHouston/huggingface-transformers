@@ -6,8 +6,7 @@ env:
 jobs:
   setup:
     name: Setup
-    runs-on:
-      group: aws-g5-4xlarge-cache
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -59,7 +58,7 @@ jobs:
     secrets: inherit
   send_results:
     name: Send results to webhook
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: always()
     needs:
     - call_doctest_job
