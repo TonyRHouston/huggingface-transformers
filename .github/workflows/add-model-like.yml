@@ -4,7 +4,7 @@ on:
 jobs:
   run_tests_templates_like:
     name: Add new model like template tests
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
