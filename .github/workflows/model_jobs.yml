@@ -1,5 +1,4 @@
 name: model jobs
-
 on:
   workflow_call:
     inputs:
@@ -22,138 +21,132 @@ on:
         required: false
         default: run_models_gpu
         type: string
-
 env:
   HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
   OMP_NUM_THREADS: 8
   MKL_NUM_THREADS: 8
   RUN_SLOW: yes
-  # For gated repositories, we still need to agree to share information on the Hub repo. page in order to get access.
-  # This token is created under the bot `hf-transformers-bot`.
   HF_HUB_READ_TOKEN: ${{ secrets.HF_HUB_READ_TOKEN }}
   SIGOPT_API_TOKEN: ${{ secrets.SIGOPT_API_TOKEN }}
   TF_FORCE_GPU_ALLOW_GROWTH: true
   CUDA_VISIBLE_DEVICES: 0,1
-
 jobs:
   run_models_gpu:
-    name: " "
+    name: ' '
     strategy:
       max-parallel: 8
       fail-fast: false
       matrix:
         folders: ${{ fromJson(inputs.folder_slices)[inputs.slice_id] }}
-    runs-on:
-      group: ${{ fromJson(inputs.runner_map)[matrix.folders][inputs.machine_type] }}
+    runs-on: ubuntu-latest
     container:
       image: ${{ inputs.docker }}
       options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     steps:
-      - name: Echo input and matrix info
-        shell: bash
-        run: |
-          echo "${{ inputs.folder_slices }}"
-          echo "${{ matrix.folders }}"
-          echo "${{ toJson(fromJson(inputs.folder_slices)[inputs.slice_id]) }}"
+    - name: Echo input and matrix info
+      shell: bash
+      run: 'echo "${{ inputs.folder_slices }}"
 
-      - name: Echo folder ${{ matrix.folders }}
-        shell: bash
-        # For folders like `models/bert`, set an env. var. (`matrix_folders`) to `models_bert`, which will be used to
-        # set the artifact folder names (because the character `/` is not allowed).
-        run: |
-          echo "${{ matrix.folders }}"
-          matrix_folders=${{ matrix.folders }}
-          matrix_folders=${matrix_folders/'models/'/'models_'}
-          echo "$matrix_folders"
-          echo "matrix_folders=$matrix_folders" >> $GITHUB_ENV
+        echo "${{ matrix.folders }}"
 
-      - name: Update clone
-        working-directory: /transformers
-        run: git fetch && git checkout ${{ github.sha }}
+        echo "${{ toJson(fromJson(inputs.folder_slices)[inputs.slice_id]) }}"
 
-      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
-        working-directory: /transformers
-        run: python3 -m pip uninstall -y transformers natten && python3 -m pip install -e .
+        '
+    - name: Echo folder ${{ matrix.folders }}
+      shell: bash
+      run: 'echo "${{ matrix.folders }}"
 
-      - name: Update / Install some packages (for Past CI)
-        if: ${{ contains(inputs.docker, '-past-') }}
-        working-directory: /transformers
-        run: |
-          python3 -m pip install -U datasets
+        matrix_folders=${{ matrix.folders }}
 
-      - name: Update / Install some packages (for Past CI)
-        if: ${{ contains(inputs.docker, '-past-') && contains(inputs.docker, '-pytorch-') }}
-        working-directory: /transformers
-        run: |
-          python3 -m pip install --no-cache-dir git+https://github.com/huggingface/accelerate@main#egg=accelerate
+        matrix_folders=${matrix_folders/''models/''/''models_''}
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        echo "$matrix_folders"
 
-      - name: Environment
-        working-directory: /transformers
-        run: |
-          python3 utils/print_env.py
+        echo "matrix_folders=$matrix_folders" >> $GITHUB_ENV
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        '
+    - name: Update clone
+      working-directory: /transformers
+      run: git fetch && git checkout ${{ github.sha }}
+    - name: Reinstall transformers in edit mode (remove the one installed during docker
+        image build)
+      working-directory: /transformers
+      run: python3 -m pip uninstall -y transformers natten && python3 -m pip install
+        -e .
+    - name: Update / Install some packages (for Past CI)
+      if: ${{ contains(inputs.docker, '-past-') }}
+      working-directory: /transformers
+      run: 'python3 -m pip install -U datasets
 
-      - name: Set `machine_type` for report and artifact names
-        working-directory: /transformers
-        shell: bash
-        run: |
-          echo "${{ inputs.machine_type }}"
+        '
+    - name: Update / Install some packages (for Past CI)
+      if: ${{ contains(inputs.docker, '-past-') && contains(inputs.docker, '-pytorch-')
+        }}
+      working-directory: /transformers
+      run: 'python3 -m pip install --no-cache-dir git+https://github.com/huggingface/accelerate@main#egg=accelerate
 
-          if [ "${{ inputs.machine_type }}" = "aws-g5-4xlarge-cache" ]; then
-            machine_type=single-gpu
-          elif [ "${{ inputs.machine_type }}" = "aws-g5-12xlarge-cache" ]; then
-            machine_type=multi-gpu
-          else
-            machine_type=${{ inputs.machine_type }}
-          fi
+        '
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
 
-          echo "$machine_type"
-          echo "machine_type=$machine_type" >> $GITHUB_ENV
+        '
+    - name: Environment
+      working-directory: /transformers
+      run: 'python3 utils/print_env.py
 
-      - name: checkout to start_commit
-        working-directory: /transformers
-        run: git checkout 8c4ea670dceace8d9b1bac8310bc62146b7134cd
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - name: Set `machine_type` for report and artifact names
+      working-directory: /transformers
+      shell: bash
+      run: "echo \"${{ inputs.machine_type }}\"\n\nif [ \"${{ inputs.machine_type\
+        \ }}\" = \"aws-g5-4xlarge-cache\" ]; then\n  machine_type=single-gpu\nelif\
+        \ [ \"${{ inputs.machine_type }}\" = \"aws-g5-12xlarge-cache\" ]; then\n \
+        \ machine_type=multi-gpu\nelse\n  machine_type=${{ inputs.machine_type }}\n\
+        fi\n\necho \"$machine_type\"\necho \"machine_type=$machine_type\" >> $GITHUB_ENV\n"
+    - name: checkout to start_commit
+      working-directory: /transformers
+      run: git checkout 8c4ea670dceace8d9b1bac8310bc62146b7134cd
+    - name: download and copy the fixed script
+      working-directory: /transformers
+      shell: bash
+      run: apt-get update && apt-get install -y wget curl && rm -rf utils/check_bad_commit.py
+        && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/check_bad_commit.py
+        && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/new_failures_2.json
+        && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/job_links.json
+        && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/process_bad_commit_report.py
+        && cp check_bad_commit.py utils/check_bad_commit.py && cp process_bad_commit_report.py
+        utils/process_bad_commit_report.py
+    - name: Run all tests on GPU
+      working-directory: /transformers
+      run: python3 utils/check_bad_commit.py --start_commit 8c4ea670dceace8d9b1bac8310bc62146b7134cd
+        --end_commit 6dfd561d9cd722dfc09f702355518c6d09b9b4e3 --file new_failures_2.json
+        --output_file new_failures_with_bad_commit.json
+    - name: Upload new_failures_with_bad_commit.json
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: new_failures_with_bad_commit
+        path: /transformers/new_failures_with_bad_commit.json
+    - name: Show results
+      working-directory: /transformers
+      run: 'ls -la new_failures_with_bad_commit.json
 
-      - name: download and copy the fixed script
-        working-directory: /transformers
-        shell: bash
-        run: apt-get update && apt-get install -y wget curl && rm -rf utils/check_bad_commit.py && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/check_bad_commit.py && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/new_failures_2.json && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/job_links.json && curl -O https://raw.githubusercontent.com/huggingface/transformers/refs/heads/temp_get_new_failed_info/process_bad_commit_report.py && cp check_bad_commit.py utils/check_bad_commit.py && cp process_bad_commit_report.py utils/process_bad_commit_report.py
+        cat new_failures_with_bad_commit.json
 
-      - name: Run all tests on GPU
-        working-directory: /transformers
-        # run: python3 utils/check_bad_commit.py --start_commit 8c4ea670dceace8d9b1bac8310bc62146b7134cd --end_commit 6dfd561d9cd722dfc09f702355518c6d09b9b4e3 --file new_failures.json --output_file new_failures_with_bad_commit.json
-        run: python3 utils/check_bad_commit.py --start_commit 8c4ea670dceace8d9b1bac8310bc62146b7134cd --end_commit 6dfd561d9cd722dfc09f702355518c6d09b9b4e3 --file new_failures_2.json --output_file new_failures_with_bad_commit.json
+        '
+    - name: Process report
+      shell: bash
+      working-directory: /transformers
+      run: 'python3 utils/process_bad_commit_report.py
 
-      - name: "Upload new_failures_with_bad_commit.json"
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: new_failures_with_bad_commit
-          path: /transformers/new_failures_with_bad_commit.json
-
-      - name: Show results
-        working-directory: /transformers
-        run: |
-          ls -la new_failures_with_bad_commit.json
-          cat new_failures_with_bad_commit.json
-
-      - name: Process report
-        shell: bash
-        working-directory: /transformers
-        run: |
-          python3 utils/process_bad_commit_report.py
-
-      - name: "Upload new_failures_with_bad_commit_grouped_by_authors.json"
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: new_failures_with_bad_commit_grouped_by_authors
-          path: /transformers/new_failures_with_bad_commit_grouped_by_authors.json
+        '
+    - name: Upload new_failures_with_bad_commit_grouped_by_authors.json
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: new_failures_with_bad_commit_grouped_by_authors
+        path: /transformers/new_failures_with_bad_commit_grouped_by_authors.json
