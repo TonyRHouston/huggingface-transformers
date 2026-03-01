@@ -1,41 +1,32 @@
 name: Self-hosted runner (scheduled)
-
-# Note that each job's dependencies go into a corresponding docker file.
-#
-# For example for `run_all_tests_torch_cuda_extensions_gpu` the docker image is
-# `huggingface/transformers-pytorch-deepspeed-latest-gpu`, which can be found at
-# `docker/transformers-pytorch-deepspeed-latest-gpu/Dockerfile`
-
 on:
-  repository_dispatch:
+  repository_dispatch: null
   schedule:
-    - cron: "17 2 * * *"
+  - cron: 17 2 * * *
   push:
     branches:
-      - run_split_daily_ci_based_on_no_job_name
-
+    - run_split_daily_ci_based_on_no_job_name
 env:
   HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
   OMP_NUM_THREADS: 8
   MKL_NUM_THREADS: 8
   RUN_SLOW: yes
-  # For gated repositories, we still need to agree to share information on the Hub repo. page in order to get access.
-  # This token is created under the bot `hf-transformers-bot`.
   HF_HUB_READ_TOKEN: ${{ secrets.HF_HUB_READ_TOKEN }}
   SIGOPT_API_TOKEN: ${{ secrets.SIGOPT_API_TOKEN }}
   TF_FORCE_GPU_ALLOW_GROWTH: true
   RUN_PT_TF_CROSS_TESTS: 1
   CUDA_VISIBLE_DEVICES: 0,1
   NUM_SLICES: 4
-
 jobs:
   setup:
     name: Setup
     strategy:
       matrix:
-        machine_type: [single-gpu, multi-gpu]
-    runs-on: yih-dar-shieh-temp-runner-for-testing-workflow-file
+        machine_type:
+        - single-gpu
+        - multi-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -43,56 +34,64 @@ jobs:
       folder_slices: ${{ steps.set-matrix.outputs.folder_slices }}
       slice_ids: ${{ steps.set-matrix.outputs.slice_ids }}
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: |
-          git fetch && git checkout ${{ github.sha }}
+    - name: Update clone
+      working-directory: /transformers
+      run: 'git fetch && git checkout ${{ github.sha }}
 
-      - name: Cleanup
-        working-directory: /transformers
-        run: |
-          rm -rf tests/__pycache__
-          rm -rf tests/models/__pycache__
-          rm -rf reports
+        '
+    - name: Cleanup
+      working-directory: /transformers
+      run: 'rm -rf tests/__pycache__
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        rm -rf tests/models/__pycache__
 
-      - id: set-matrix
-        name: Identify models to test
-        working-directory: /transformers/tests
-        run: |
-          echo "folder_slices=$(python3 ../utils/split_model_tests.py --num_splits ${{ env.NUM_SLICES }})" >> $GITHUB_OUTPUT
-          echo "slice_ids=$(python3 -c 'd = list(range(${{ env.NUM_SLICES }})); print(d)')" >> $GITHUB_OUTPUT
+        rm -rf reports
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - id: set-matrix
+      name: Identify models to test
+      working-directory: /transformers/tests
+      run: 'echo "folder_slices=$(python3 ../utils/split_model_tests.py --num_splits
+        ${{ env.NUM_SLICES }})" >> $GITHUB_OUTPUT
 
+        echo "slice_ids=$(python3 -c ''d = list(range(${{ env.NUM_SLICES }})); print(d)'')"
+        >> $GITHUB_OUTPUT
+
+        '
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
+
+        '
   echo:
     name: Echo
     needs: setup
     strategy:
       matrix:
-        machine_type: [single-gpu, multi-gpu]
-    runs-on: yih-dar-shieh-temp-runner-for-testing-workflow-file
+        machine_type:
+        - single-gpu
+        - multi-gpu
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     steps:
-      - name: echo
-        working-directory: /transformers
-        run: |
-          echo "${{ needs.setup.outputs.folder_slices }}"
+    - name: echo
+      working-directory: /transformers
+      run: 'echo "${{ needs.setup.outputs.folder_slices }}"
 
+        '
   run_tests_gpu:
-    name: " "
+    name: ' '
     needs: setup
     strategy:
       fail-fast: false
       matrix:
-        machine_type: [single-gpu, multi-gpu]
+        machine_type:
+        - single-gpu
+        - multi-gpu
         slice_id: ${{ fromJSON(needs.setup.outputs.slice_ids) }}
     uses: ./.github/workflows/model_jobs.yml
     with:
@@ -100,152 +99,92 @@ jobs:
       machine_type: ${{ matrix.machine_type }}
       slice_id: ${{ matrix.slice_id }}
     secrets: inherit
-
-#  run_examples_gpu:
-#    name: Examples directory
-#    strategy:
-#      fail-fast: false
-#      matrix:
-#        machine_type: [single-gpu]
-#    runs-on: yih-dar-shieh-temp-runner-for-testing-workflow-file
-#    container:
-#      image: huggingface/transformers-all-latest-gpu
-#      options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
-#    needs: setup
-#    steps:
-#      - name: Update clone
-#        working-directory: /transformers
-#        run: git fetch && git checkout ${{ github.sha }}
-#
-#      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
-#        working-directory: /transformers
-#        run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
-#
-#      - name: NVIDIA-SMI
-#        run: |
-#          nvidia-smi
-#
-#      - name: Environment
-#        working-directory: /transformers
-#        run: |
-#          python3 utils/print_env.py
-#
-#      - name: Show installed libraries and their versions
-#        working-directory: /transformers
-#        run: pip freeze
-#
-#      - name: Run examples tests on GPU
-#        working-directory: /transformers
-#        run: |
-#          pip install -r examples/pytorch/_tests_requirements.txt
-#          python3 -m pytest -v --make-reports=${{ matrix.machine_type }}_examples_gpu examples/pytorch
-#
-#      - name: Failure short reports
-#        if: ${{ failure() }}
-#        continue-on-error: true
-#        run: cat /transformers/reports/${{ matrix.machine_type }}_examples_gpu/failures_short.txt
-#
-#      - name: "Test suite reports artifacts: ${{ matrix.machine_type }}_run_examples_gpu"
-#        if: ${{ always() }}
-#        uses: actions/upload-artifact@v3
-#        with:
-#          name: ${{ matrix.machine_type }}_run_examples_gpu
-#          path: /transformers/reports/${{ matrix.machine_type }}_examples_gpu
-
   run_extract_warnings:
     name: Extract warnings in CI artifacts
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: always()
-    needs: [
-      setup,
-      run_tests_gpu,
-#      run_examples_gpu
-    ]
+    needs:
+    - setup
+    - run_tests_gpu
     steps:
-      - name: Checkout transformers
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 2
+    - name: Checkout transformers
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 2
+    - name: Install transformers
+      run: pip install transformers
+    - name: Show installed libraries and their versions
+      run: pip freeze
+    - name: Create output directory
+      run: mkdir warnings_in_ci
+    - uses: actions/download-artifact@v3
+      with:
+        path: warnings_in_ci
+    - name: Show artifacts
+      run: echo "$(python3 -c 'import os; d = os.listdir(); print(d)')"
+      working-directory: warnings_in_ci
+    - name: Extract warnings in CI artifacts
+      run: 'python3 utils/extract_warnings.py --workflow_run_id ${{ github.run_id
+        }} --output_dir warnings_in_ci --token ${{ secrets.ACCESS_REPO_INFO_TOKEN
+        }} --from_gh
 
-      - name: Install transformers
-        run: pip install transformers
+        echo "$(python3 -c ''import os; import json; fp = open("warnings_in_ci/selected_warnings.json");
+        d = json.load(fp); d = "\n".join(d) ;print(d)'')"
 
-      - name: Show installed libraries and their versions
-        run: pip freeze
-
-      - name: Create output directory
-        run: mkdir warnings_in_ci
-
-      - uses: actions/download-artifact@v3
-        with:
-          path: warnings_in_ci
-
-      - name: Show artifacts
-        run: echo "$(python3 -c 'import os; d = os.listdir(); print(d)')"
-        working-directory: warnings_in_ci
-
-      - name: Extract warnings in CI artifacts
-        run: |
-          python3 utils/extract_warnings.py --workflow_run_id ${{ github.run_id }} --output_dir warnings_in_ci --token ${{ secrets.ACCESS_REPO_INFO_TOKEN }} --from_gh
-          echo "$(python3 -c 'import os; import json; fp = open("warnings_in_ci/selected_warnings.json"); d = json.load(fp); d = "\n".join(d) ;print(d)')"
-
-      - name: Upload artifact
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v3
-        with:
-          name: warnings_in_ci
-          path: warnings_in_ci/selected_warnings.json
-
+        '
+    - name: Upload artifact
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: warnings_in_ci
+        path: warnings_in_ci/selected_warnings.json
   send_results:
     name: Send results to webhook
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: always()
-    needs: [
-      setup,
-      run_tests_gpu,
-#      run_examples_gpu
-      run_extract_warnings
-    ]
+    needs:
+    - setup
+    - run_tests_gpu
+    - run_extract_warnings
     steps:
-      - name: Preliminary job status
-        shell: bash
-        # For the meaning of these environment variables, see the job `Setup`
-        run: |
-          echo "Setup status: ${{ needs.setup.result }}"
+    - name: Preliminary job status
+      shell: bash
+      run: 'echo "Setup status: ${{ needs.setup.result }}"
 
-      - uses: actions/checkout@v3
-      - uses: actions/download-artifact@v3
-      - name: Send message to Slack
-        env:
-          CI_SLACK_BOT_TOKEN: ${{ secrets.CI_SLACK_BOT_TOKEN }}
-          CI_SLACK_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_ID }}
-          CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY }}
-          CI_SLACK_CHANNEL_DUMMY_TESTS: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
-          CI_SLACK_REPORT_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
-          ACCESS_REPO_INFO_TOKEN: ${{ secrets.ACCESS_REPO_INFO_TOKEN }}
-          CI_EVENT: scheduled
-          CI_SHA: ${{ github.sha }}
-          CI_WORKFLOW_REF: ${{ github.workflow_ref }}
-          SETUP_STATUS: ${{ needs.setup.result }}
-        # We pass `needs.setup.outputs.matrix` as the argument. A processing in `notification_service.py` to change
-        # `models/bert` to `models_bert` is required, as the artifact names use `_` instead of `/`.
-        run: |
-          sudo apt-get install -y curl
-          pip install slack_sdk
-          pip show slack_sdk
-          python utils/notification_service.py "${{ needs.setup.outputs.folder_slices }}"
+        '
+    - uses: actions/checkout@v3
+    - uses: actions/download-artifact@v3
+    - name: Send message to Slack
+      env:
+        CI_SLACK_BOT_TOKEN: ${{ secrets.CI_SLACK_BOT_TOKEN }}
+        CI_SLACK_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_ID }}
+        CI_SLACK_CHANNEL_ID_DAILY: ${{ secrets.CI_SLACK_CHANNEL_ID_DAILY }}
+        CI_SLACK_CHANNEL_DUMMY_TESTS: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
+        CI_SLACK_REPORT_CHANNEL_ID: ${{ secrets.CI_SLACK_CHANNEL_DUMMY_TESTS }}
+        ACCESS_REPO_INFO_TOKEN: ${{ secrets.ACCESS_REPO_INFO_TOKEN }}
+        CI_EVENT: scheduled
+        CI_SHA: ${{ github.sha }}
+        CI_WORKFLOW_REF: ${{ github.workflow_ref }}
+        SETUP_STATUS: ${{ needs.setup.result }}
+      run: 'sudo apt-get install -y curl
 
-      # Upload complete failure tables, as they might be big and only truncated versions could be sent to Slack.
-      - name: Failure table artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v3
-        with:
-          name: prev_ci_results
-          path: prev_ci_results
+        pip install slack_sdk
 
-      - name: Other artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v3
-        with:
-          name: jobs_and_artifacts
-          path: jobs_and_artifacts
+        pip show slack_sdk
+
+        python utils/notification_service.py "${{ needs.setup.outputs.folder_slices
+        }}"
+
+        '
+    - name: Failure table artifacts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: prev_ci_results
+        path: prev_ci_results
+    - name: Other artifacts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: jobs_and_artifacts
+        path: jobs_and_artifacts
