@@ -6,7 +6,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: ${{ contains(github.event.head_commit.message, '[build-ci-image]') || contains(github.event.head_commit.message,
       '[push-ci-image]') && '!cancelled()' || github.event_name == 'schedule' }}
     strategy:
@@ -46,7 +46,7 @@ jobs:
           == 'schedule' }}
         tags: ${{ env.TAG }}
   notify:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: ${{ contains(github.event.head_commit.message, '[build-ci-image]') || contains(github.event.head_commit.message,
       '[push-ci-image]') && '!cancelled()' || github.event_name == 'schedule' }}
     steps:
