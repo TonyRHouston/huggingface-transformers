@@ -1,11 +1,4 @@
 name: Self-hosted runner (scheduled)
-
-# Note that each job's dependencies go into a corresponding docker file.
-#
-# For example for `run_torch_cuda_extensions_gpu` the docker image is
-# `huggingface/transformers-pytorch-deepspeed-latest-gpu`, which can be found at
-# `docker/transformers-pytorch-deepspeed-latest-gpu/Dockerfile`
-
 on:
   workflow_call:
     inputs:
@@ -28,82 +21,87 @@ on:
         default: ''
         required: false
         type: string
-
 env:
   HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
   OMP_NUM_THREADS: 8
   MKL_NUM_THREADS: 8
   RUN_SLOW: yes
-  # For gated repositories, we still need to agree to share information on the Hub repo. page in order to get access.
-  # This token is created under the bot `hf-transformers-bot`.
   HF_HUB_READ_TOKEN: ${{ secrets.HF_HUB_READ_TOKEN }}
   SIGOPT_API_TOKEN: ${{ secrets.SIGOPT_API_TOKEN }}
   TF_FORCE_GPU_ALLOW_GROWTH: true
   RUN_PT_TF_CROSS_TESTS: 1
   CUDA_VISIBLE_DEVICES: 0,1
   NUM_SLICES: 2
-
 jobs:
   setup:
     if: contains(fromJSON('["run_models_gpu", "run_quantization_torch_gpu"]'), inputs.job)
     name: Setup
     strategy:
       matrix:
-        machine_type: [aws-g4dn-2xlarge-cache]
-    runs-on:
-      group: '${{ matrix.machine_type }}'
+        machine_type:
+        - aws-g4dn-2xlarge-cache
+    runs-on: ubuntu-latest
     container:
       image: huggingface/transformers-all-latest-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
     outputs:
       folder_slices: ${{ steps.set-matrix.outputs.folder_slices }}
       slice_ids: ${{ steps.set-matrix.outputs.slice_ids }}
-      quantization_matrix: ${{ steps.set-matrix-quantization.outputs.quantization_matrix }}
+      quantization_matrix: ${{ steps.set-matrix-quantization.outputs.quantization_matrix
+        }}
     steps:
-      - name: Update clone
-        working-directory: /transformers
-        run: |
-          git fetch && git checkout ${{ github.sha }}
+    - name: Update clone
+      working-directory: /transformers
+      run: 'git fetch && git checkout ${{ github.sha }}
 
-      - name: Cleanup
-        working-directory: /transformers
-        run: |
-          rm -rf tests/__pycache__
-          rm -rf tests/models/__pycache__
-          rm -rf reports
+        '
+    - name: Cleanup
+      working-directory: /transformers
+      run: 'rm -rf tests/__pycache__
 
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
+        rm -rf tests/models/__pycache__
 
-      - id: set-matrix
-        if: ${{ inputs.job == 'run_models_gpu' }}
-        name: Identify models to test
-        working-directory: /transformers/tests
-        run: |
-          echo "folder_slices=$(python3 ../utils/split_model_tests.py --num_splits ${{ env.NUM_SLICES }})" >> $GITHUB_OUTPUT
-          echo "slice_ids=$(python3 -c 'd = list(range(${{ env.NUM_SLICES }})); print(d)')" >> $GITHUB_OUTPUT
-      
-      - id: set-matrix-quantization
-        if: ${{ inputs.job == 'run_quantization_torch_gpu' }}
-        name: Identify quantization method to test
-        working-directory: /transformers/tests
-        run: |
-          echo "quantization_matrix=$(python3 -c 'import os; tests = os.getcwd(); quantization_tests = os.listdir(os.path.join(tests, "quantization")); d = sorted(list(filter(os.path.isdir, [f"quantization/{x}" for x in quantization_tests]))) ;  print(d)')" >> $GITHUB_OUTPUT
+        rm -rf reports
 
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
+        '
+    - name: Show installed libraries and their versions
+      working-directory: /transformers
+      run: pip freeze
+    - id: set-matrix
+      if: ${{ inputs.job == 'run_models_gpu' }}
+      name: Identify models to test
+      working-directory: /transformers/tests
+      run: 'echo "folder_slices=$(python3 ../utils/split_model_tests.py --num_splits
+        ${{ env.NUM_SLICES }})" >> $GITHUB_OUTPUT
 
+        echo "slice_ids=$(python3 -c ''d = list(range(${{ env.NUM_SLICES }})); print(d)'')"
+        >> $GITHUB_OUTPUT
+
+        '
+    - id: set-matrix-quantization
+      if: ${{ inputs.job == 'run_quantization_torch_gpu' }}
+      name: Identify quantization method to test
+      working-directory: /transformers/tests
+      run: 'echo "quantization_matrix=$(python3 -c ''import os; tests = os.getcwd();
+        quantization_tests = os.listdir(os.path.join(tests, "quantization")); d =
+        sorted(list(filter(os.path.isdir, [f"quantization/{x}" for x in quantization_tests])))
+        ;  print(d)'')" >> $GITHUB_OUTPUT
+
+        '
+    - name: NVIDIA-SMI
+      run: 'nvidia-smi
+
+        '
   run_models_gpu:
     if: ${{ inputs.job == 'run_models_gpu' }}
-    name: " "
+    name: ' '
     needs: setup
     strategy:
       fail-fast: false
       matrix:
-        machine_type: [aws-g4dn-2xlarge-cache]
+        machine_type:
+        - aws-g4dn-2xlarge-cache
         slice_id: ${{ fromJSON(needs.setup.outputs.slice_ids) }}
     uses: ./.github/workflows/model_jobs.yml
     with:
